@@ -1,6 +1,8 @@
 # DevOpsClaw
 
 > **全球首创 pipecircle** - AI 驱动的 CI/CD 闭环修复系统
+> 
+> **新范式 CI/CD 系统**：高稳定高可用 Jenkins 引擎 + 新质生产力 OpenClaw AI 驱动
 
 ---
 
