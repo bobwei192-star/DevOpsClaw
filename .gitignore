@@ -6,6 +6,11 @@
 # 1. 敏感配置文件
 # ============================================
 .env
+.env.local
+.env.*.local
+.openclaw_token
+*.token
+*.secret
 
 # ============================================
 # 2. 数据目录（包含密码、密钥等敏感信息）
@@ -83,6 +88,15 @@ htmlcov/
 *.cover
 .hypothesis/
 .pytest_cache/
+
+# 测试报告（每次运行都会生成，不应该提交）
+tests/*_test_report.txt
+tests/*.report
+tests/report*.txt
+
+# 测试输出目录
+tests/output/
+tests/results/
 
 # ============================================
 # 9. 自愈功能状态文件
