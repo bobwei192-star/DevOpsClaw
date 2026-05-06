@@ -1,48 +1,32 @@
 #!/bin/bash
 # =============================================================================
-# GitLab CE Docker 安装脚本 v4.0.0
+# DevOpsClaw GitLab 部署脚本
 # =============================================================================
-# 注意: 推荐使用项目根目录的 deploy_all.sh 或 docker-compose up 进行部署
+# 功能：
+#   - 部署 GitLab 服务
+#   - 配置 GitLab 外部 URL
+#   - 获取 GitLab 初始密码
 #
-# 此脚本作为备选方案，用于单独部署 GitLab
+# 使用方法：
+#   - 独立运行: sudo ./deploy_gitlab/deploy_gitlab.sh
+#   - 被主脚本调用: source deploy_gitlab/deploy_gitlab.sh
 #
-# 端口配置 (与 docker-compose.yml 一致):
-#   - HTTP:  8082 (宿主机) -> 80 (容器)
-#   - HTTPS: 8443 (宿主机) -> 443 (容器)
-#   - SSH:   2222 (宿主机) -> 22 (容器)
-#
-# 使用方法:
-#   chmod +x deploy_gitlab.sh
-#   sudo ./deploy_gitlab.sh
+# 端口配置 (新规划):
+#   - GitLab HTTP: 19092
+#   - GitLab HTTPS: 19443
+#   - GitLab SSH: 2222
+#   - Nginx GitLab: 18441
 #
 # =============================================================================
 
-set -euo pipefail
+set -e
 
-# =============================================================================
-# 配置变量
-# =============================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-ENV_FILE="$PROJECT_ROOT/.env"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+LIB_DIR="$PROJECT_DIR/lib"
+DEPLOY_LOG="${PROJECT_DIR}/deploy.log"
+DOCKER_COMPOSE_CMD=""
 
-# 端口配置 (从环境变量读取，或使用默认值)
-GITLAB_PORT_HTTP=${GITLAB_PORT_HTTP:-8082}
-GITLAB_PORT_HTTPS=${GITLAB_PORT_HTTPS:-8443}
-GITLAB_PORT_SSH=${GITLAB_PORT_SSH:-2222}
-GITLAB_CONTAINER_NAME=${GITLAB_CONTAINER_NAME:-devopsclaw-gitlab}
-GITLAB_IMAGE=${GITLAB_IMAGE:-gitlab/gitlab-ce:latest}
-GITLAB_HOSTNAME=${GITLAB_HOSTNAME:-gitlab.devopsclaw.local}
-GITLAB_SHM_SIZE=${GITLAB_SHM_SIZE:-512m}
-
-# 数据目录
-GITLAB_CONFIG_DIR=${GITLAB_CONFIG_DIR:-/srv/gitlab/config}
-GITLAB_LOGS_DIR=${GITLAB_LOGS_DIR:-/srv/gitlab/logs}
-GITLAB_DATA_DIR=${GITLAB_DATA_DIR:-/srv/gitlab/data}
-
-# =============================================================================
-# 颜色定义
-# =============================================================================
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -52,43 +36,53 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-# =============================================================================
-# 日志函数
-# =============================================================================
 log_info() {
-    echo -e "${GREEN}[INFO]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"
+    local msg="$1"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    if [[ -n "$DEPLOY_LOG" ]]; then
+        echo -e "${GREEN}[INFO]${NC} $timestamp - $msg" | tee -a "$DEPLOY_LOG"
+    else
+        echo -e "${GREEN}[INFO]${NC} $timestamp - $msg"
+    fi
 }
 
 log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"
+    local msg="$1"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    if [[ -n "$DEPLOY_LOG" ]]; then
+        echo -e "${YELLOW}[WARN]${NC} $timestamp - $msg" | tee -a "$DEPLOY_LOG"
+    else
+        echo -e "${YELLOW}[WARN]${NC} $timestamp - $msg"
+    fi
 }
 
 log_error() {
-    echo -e "${RED}[ERROR]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"
+    local msg="$1"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    if [[ -n "$DEPLOY_LOG" ]]; then
+        echo -e "${RED}[ERROR]${NC} $timestamp - $msg" | tee -a "$DEPLOY_LOG"
+    else
+        echo -e "${RED}[ERROR]${NC} $timestamp - $msg"
+    fi
 }
 
 log_step() {
-    echo -e "\n${BLUE}=== $1 ===${NC}"
+    local msg="$1"
+    echo -e "\n${BLUE}=== $msg ===${NC}"
 }
 
 log_banner() {
     echo -e "${PURPLE}"
     cat << 'EOF'
-   ____ _ _   _           _     
-  / ___(_) |_| |    __ _| |__  
- | |  _| | __| |   / _` | '_ \ 
- | |_| | | |_| |__| (_| | |_) |
-  \____|_|\__|_____\__,_|_.__/ 
-                                 
+  ____             ____  _             ____ _                    
+ |  _ \  _____   _/ ___|| | _____     / ___| | __ ___      ____
+ | | | |/ _ \ \ / /\___ \| |/ _ \ \   / /   | |/ _` \ \ /\ / /
+ | |_| |  __/\ V /  ___) | | (_) \ \_/ /    | | (_| |\ V  V / 
+ |____/ \___| \_/  |____/|_|\___/ \___/     |_|\__,_| \_/\_/  
+                                                                   
 EOF
     echo -e "${NC}"
-    echo -e "${CYAN}GitLab CE Docker 安装脚本 v4.0.0${NC}"
-    echo -e "${CYAN}========================================${NC}"
 }
-
-# =============================================================================
-# 检查函数
-# =============================================================================
 
 check_root() {
     if [[ $EUID -ne 0 ]]; then
@@ -102,304 +96,436 @@ check_docker() {
     log_step "检查 Docker 环境"
     
     if ! command -v docker &>/dev/null; then
-        log_warn "Docker 未安装，正在安装..."
-        install_docker
-    else
-        log_info "Docker 已安装: $(docker --version)"
+        log_error "Docker 未安装"
+        log_info "请先运行: $PROJECT_DIR/deploy_docker/install_docker.sh"
+        exit 1
     fi
+    
+    log_info "Docker 已安装: $(docker --version)"
     
     if docker compose version &>/dev/null; then
         DOCKER_COMPOSE_CMD="docker compose"
-        log_info "Docker Compose (plugin) 可用"
+        log_info "Docker Compose (plugin) 已安装"
     elif command -v docker-compose &>/dev/null; then
         DOCKER_COMPOSE_CMD="docker-compose"
-        log_info "Docker Compose (standalone) 可用"
-    fi
-}
-
-install_docker() {
-    log_info "正在安装 Docker..."
-    
-    apt-get update -qq
-    apt-get install -y -qq \
-        ca-certificates \
-        curl \
-        gnupg \
-        lsb-release \
-        software-properties-common
-    
-    mkdir -p /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-    
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
-    
-    apt-get update -qq
-    apt-get install -y -qq \
-        docker-ce \
-        docker-ce-cli \
-        containerd.io \
-        docker-compose-plugin
-    
-    systemctl enable docker --now
-    
-    log_info "Docker 安装完成: $(docker --version)"
-}
-
-check_docker_compose() {
-    log_step "检查 Docker Compose 配置"
-    
-    if [[ -f "$PROJECT_ROOT/docker-compose.yml" ]]; then
-        log_info "找到项目根目录的 docker-compose.yml:"
-        log_info "推荐使用以下命令进行部署:"
-        echo
-        echo -e "${CYAN}  cd $PROJECT_ROOT${NC}"
-        echo -e "${CYAN}  $DOCKER_COMPOSE_CMD up -d gitlab${NC}"
-        echo
-        read -p "是否使用 docker-compose 方式部署? (y/n): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            log_info "使用 docker-compose 方式部署..."
-            cd "$PROJECT_ROOT"
-            $DOCKER_COMPOSE_CMD up -d gitlab
-            log_info "GitLab 部署命令已执行"
-            log_info "请等待 GitLab 启动（约 5-10 分钟）"
-            exit 0
-        fi
-    fi
-}
-
-# =============================================================================
-# 部署函数 (Docker run 方式)
-# =============================================================================
-
-create_directories() {
-    log_step "创建数据目录"
-    
-    mkdir -p "$GITLAB_CONFIG_DIR"
-    mkdir -p "$GITLAB_LOGS_DIR"
-    mkdir -p "$GITLAB_DATA_DIR"
-    
-    log_info "配置目录: $GITLAB_CONFIG_DIR"
-    log_info "日志目录: $GITLAB_LOGS_DIR"
-    log_info "数据目录: $GITLAB_DATA_DIR"
-}
-
-pull_image() {
-    log_step "拉取 GitLab 镜像"
-    
-    log_info "镜像: $GITLAB_IMAGE"
-    log_info "注意: 镜像约 2GB，下载可能需要一些时间"
-    
-    if docker pull "$GITLAB_IMAGE"; then
-        log_info "GitLab 镜像拉取成功 ✓"
+        log_info "Docker Compose (standalone) 已安装"
     else
-        log_error "镜像拉取失败，请检查网络连接"
+        log_error "Docker Compose 未安装"
         exit 1
     fi
 }
 
-cleanup_old() {
-    log_step "清理旧容器"
+load_env() {
+    local env_file="$1"
     
-    if docker ps -a --format '{{.Names}}' | grep -q "^${GITLAB_CONTAINER_NAME}$"; then
-        log_warn "检测到已存在的容器: $GITLAB_CONTAINER_NAME"
-        read -p "是否删除旧容器? (y/n): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            docker stop "$GITLAB_CONTAINER_NAME" 2>/dev/null || true
-            docker rm "$GITLAB_CONTAINER_NAME" 2>/dev/null || true
-            log_info "旧容器已清理"
-        else
-            log_warn "保留旧容器，退出部署"
-            exit 0
-        fi
-    fi
-}
-
-start_container() {
-    log_step "启动 GitLab 容器"
-    
-    log_info "容器名: $GITLAB_CONTAINER_NAME"
-    log_info "主机名: $GITLAB_HOSTNAME"
-    log_info "端口映射:"
-    log_info "  HTTP:  $GITLAB_PORT_HTTP -> 80"
-    log_info "  HTTPS: $GITLAB_PORT_HTTPS -> 443"
-    log_info "  SSH:   $GITLAB_PORT_SSH -> 22"
-    log_info "共享内存: $GITLAB_SHM_SIZE"
-    
-    docker run --detach \
-        --hostname "$GITLAB_HOSTNAME" \
-        --publish "127.0.0.1:${GITLAB_PORT_HTTP}:80" \
-        --publish "127.0.0.1:${GITLAB_PORT_HTTPS}:443" \
-        --publish "127.0.0.1:${GITLAB_PORT_SSH}:22" \
-        --name "$GITLAB_CONTAINER_NAME" \
-        --restart always \
-        --volume "${GITLAB_CONFIG_DIR}:/etc/gitlab" \
-        --volume "${GITLAB_LOGS_DIR}:/var/log/gitlab" \
-        --volume "${GITLAB_DATA_DIR}:/var/opt/gitlab" \
-        --shm-size "$GITLAB_SHM_SIZE" \
-        "$GITLAB_IMAGE"
-    
-    if [[ $? -eq 0 ]]; then
-        log_info "GitLab 容器启动成功 ✓"
+    if [[ -f "$env_file" ]]; then
+        log_info "加载环境变量: $env_file"
+        
+        while IFS= read -r line; do
+            if [[ "$line" =~ ^[A-Z_]+= ]]; then
+                var_name="${line%%=*}"
+                var_value="${line#*=}"
+                var_value="${var_value//\"/}"
+                var_value="${var_value//\'/}"
+                export "$var_name"="$var_value"
+            fi
+        done < "$env_file"
     else
-        log_error "容器启动失败"
-        exit 1
+        log_warn "环境变量文件不存在: $env_file"
     fi
 }
 
-wait_for_gitlab() {
-    log_step "等待 GitLab 启动"
+GITLAB_PORT_HTTP="${GITLAB_PORT_HTTP:-19092}"
+GITLAB_PORT_HTTPS="${GITLAB_PORT_HTTPS:-19443}"
+GITLAB_PORT_SSH="${GITLAB_PORT_SSH:-2222}"
+GITLAB_BIND="${GITLAB_BIND:-127.0.0.1}"
+GITLAB_IMAGE="${GITLAB_IMAGE:-gitlab/gitlab-ce:latest}"
+GITLAB_CONTAINER_NAME="${GITLAB_CONTAINER_NAME:-devopsclaw-gitlab}"
+GITLAB_DATA_DIR="${GITLAB_DATA_DIR:-$PROJECT_DIR/data/gitlab}"
+GITLAB_PASSWORD_FILE="/etc/gitlab/initial_root_password"
+GITLAB_ROOT_USER="${GITLAB_ROOT_USER:-root}"
+
+GITLAB_USE_HTTPS_PROXY="${GITLAB_USE_HTTPS_PROXY:-false}"
+GITLAB_NGINX_PORT="${GITLAB_NGINX_PORT:-18441}"
+GITLAB_HOSTNAME="${GITLAB_HOSTNAME:-127.0.0.1}"
+
+if [[ "$GITLAB_USE_HTTPS_PROXY" == "true" ]]; then
+    GITLAB_EXTERNAL_URL="${GITLAB_EXTERNAL_URL:-https://$GITLAB_HOSTNAME:$GITLAB_NGINX_PORT}"
+else
+    GITLAB_EXTERNAL_URL="${GITLAB_EXTERNAL_URL:-http://$GITLAB_HOSTNAME:$GITLAB_PORT_HTTP}"
+fi
+
+GITLAB_USE_NAMED_VOLUMES="${GITLAB_USE_NAMED_VOLUMES:-true}"
+GITLAB_VOLUME_CONFIG="${GITLAB_VOLUME_CONFIG:-gitlab-config}"
+GITLAB_VOLUME_LOGS="${GITLAB_VOLUME_LOGS:-gitlab-logs}"
+GITLAB_VOLUME_DATA="${GITLAB_VOLUME_DATA:-gitlab-data}"
+
+deploy_gitlab() {
+    log_step "部署 GitLab 服务"
     
-    log_warn "GitLab 首次启动通常需要 5-10 分钟，请耐心等待..."
+    if [[ "$GITLAB_USE_NAMED_VOLUMES" == "true" ]]; then
+        log_info "使用 Docker 命名卷存储 (推荐用于 WSL/Windows)"
+    else
+        if [[ ! -d "$GITLAB_DATA_DIR" ]]; then
+            log_info "创建 GitLab 数据目录: $GITLAB_DATA_DIR"
+            mkdir -p "$GITLAB_DATA_DIR/config"
+            mkdir -p "$GITLAB_DATA_DIR/logs"
+            mkdir -p "$GITLAB_DATA_DIR/data"
+        fi
+    fi
     
-    local timeout=600
-    local interval=30
-    local elapsed=0
+    if docker ps -q --filter "name=$GITLAB_CONTAINER_NAME" 2>/dev/null | grep -q .; then
+        log_info "GitLab 容器已在运行，停止并删除..."
+        docker stop "$GITLAB_CONTAINER_NAME" 2>/dev/null || true
+        docker rm "$GITLAB_CONTAINER_NAME" 2>/dev/null || true
+    elif docker ps -aq --filter "name=$GITLAB_CONTAINER_NAME" 2>/dev/null | grep -q .; then
+        log_info "删除已停止的 GitLab 容器..."
+        docker rm "$GITLAB_CONTAINER_NAME" 2>/dev/null || true
+    fi
     
-    while [[ $elapsed -lt $timeout ]]; do
-        # 检查日志中是否包含 "gitlab Reconfigured!"
-        if docker logs "$GITLAB_CONTAINER_NAME" 2>&1 | grep -q "gitlab Reconfigured!"; then
-            log_info "GitLab 配置完成 ✓"
-            break
+    log_info "创建 GitLab 容器..."
+    echo "  - 端口 HTTP: $GITLAB_BIND:$GITLAB_PORT_HTTP -> 80"
+    echo "  - 端口 HTTPS: $GITLAB_BIND:$GITLAB_PORT_HTTPS -> 443"
+    echo "  - 端口 SSH: $GITLAB_BIND:$GITLAB_PORT_SSH -> 22"
+    echo "  - 外部 URL: $GITLAB_EXTERNAL_URL"
+    
+    local gitlab_omnibus_config="external_url '$GITLAB_EXTERNAL_URL'; gitlab_rails['gitlab_shell_ssh_port'] = $GITLAB_PORT_SSH; nginx['listen_port'] = 80; nginx['listen_https'] = false;"
+    
+    if [[ "$GITLAB_USE_HTTPS_PROXY" == "true" ]]; then
+        echo "  - 模式: HTTPS 反向代理 (Nginx)"
+        gitlab_omnibus_config="$gitlab_omnibus_config gitlab_rails['trusted_proxies'] = ['127.0.0.1', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'];"
+        gitlab_omnibus_config="$gitlab_omnibus_config gitlab_rails['x_forwarded_ssl'] = true;"
+        gitlab_omnibus_config="$gitlab_omnibus_config nginx['proxy_set_headers'] = { 'X-Forwarded-Proto' => 'https', 'X-Forwarded-Ssl' => 'on' };"
+    else
+        echo "  - 模式: 直接访问 (HTTP)"
+    fi
+    
+    if [[ "$GITLAB_USE_NAMED_VOLUMES" == "true" ]]; then
+        echo "  - 存储方式: Docker 命名卷"
+        echo "  - 配置卷: $GITLAB_VOLUME_CONFIG"
+        echo "  - 日志卷: $GITLAB_VOLUME_LOGS"
+        echo "  - 数据卷: $GITLAB_VOLUME_DATA"
+        
+        docker run -d \
+            --name "$GITLAB_CONTAINER_NAME" \
+            --network devopsclaw-network \
+            --restart unless-stopped \
+            --hostname gitlab \
+            -p "$GITLAB_BIND:$GITLAB_PORT_HTTP:80" \
+            -p "$GITLAB_BIND:$GITLAB_PORT_HTTPS:443" \
+            -p "$GITLAB_BIND:$GITLAB_PORT_SSH:22" \
+            -v "$GITLAB_VOLUME_CONFIG:/etc/gitlab" \
+            -v "$GITLAB_VOLUME_LOGS:/var/log/gitlab" \
+            -v "$GITLAB_VOLUME_DATA:/var/opt/gitlab" \
+            -e GITLAB_OMNIBUS_CONFIG="$gitlab_omnibus_config" \
+            "$GITLAB_IMAGE"
+    else
+        echo "  - 数据目录: $GITLAB_DATA_DIR"
+        
+        docker run -d \
+            --name "$GITLAB_CONTAINER_NAME" \
+            --network devopsclaw-network \
+            --restart unless-stopped \
+            --hostname gitlab \
+            -p "$GITLAB_BIND:$GITLAB_PORT_HTTP:80" \
+            -p "$GITLAB_BIND:$GITLAB_PORT_HTTPS:443" \
+            -p "$GITLAB_BIND:$GITLAB_PORT_SSH:22" \
+            -v "$GITLAB_DATA_DIR/config:/etc/gitlab" \
+            -v "$GITLAB_DATA_DIR/logs:/var/log/gitlab" \
+            -v "$GITLAB_DATA_DIR/data:/var/opt/gitlab" \
+            -e GITLAB_OMNIBUS_CONFIG="$gitlab_omnibus_config" \
+            "$GITLAB_IMAGE"
+    fi
+    
+    sleep 10
+    
+    if docker ps -q --filter "name=$GITLAB_CONTAINER_NAME" 2>/dev/null | grep -q .; then
+        log_info "✓ GitLab 容器已启动"
+        log_warn "GitLab 初始化需要 5-10 分钟，请耐心等待..."
+        
+        if [[ "$GITLAB_USE_NAMED_VOLUMES" == "true" ]]; then
+            echo
+            log_info "命名卷管理命令:"
+            log_info "  查看卷: docker volume ls"
+            log_info "  备份数据: docker run --rm -v $GITLAB_VOLUME_DATA:/data -v $(pwd):/backup alpine tar cvzf /backup/gitlab-data-backup.tar.gz /data"
+            log_info "  恢复数据: docker run --rm -v $GITLAB_VOLUME_DATA:/data -v $(pwd):/backup alpine tar xvzf /backup/gitlab-data-backup.tar.gz -C /"
         fi
         
-        # 检查容器是否在运行
-        if ! docker ps --format '{{.Names}}' | grep -q "^${GITLAB_CONTAINER_NAME}$"; then
-            log_error "容器已停止运行"
-            docker logs "$GITLAB_CONTAINER_NAME" --tail 50
-            exit 1
-        fi
-        
-        elapsed=$((elapsed + interval))
-        log_info "等待 GitLab 启动... (${elapsed}s/${timeout}s)"
-        sleep $interval
-    done
-    
-    if [[ $elapsed -ge $timeout ]]; then
-        log_warn "等待超时，GitLab 可能还在启动中"
-        log_info "请稍后检查容器状态"
+        return 0
+    else
+        log_error "GitLab 容器启动失败"
+        log_warn "检查日志: docker logs $GITLAB_CONTAINER_NAME"
+        return 1
     fi
 }
 
-get_initial_password() {
-    log_step "获取初始密码"
+get_gitlab_password() {
+    local container_name="${1:-$GITLAB_CONTAINER_NAME}"
     
-    local password_file="/etc/gitlab/initial_root_password"
+    log_step "获取 GitLab 初始密码"
+    
+    if ! docker ps -q --filter "name=$container_name" 2>/dev/null | grep -q .; then
+        log_warn "GitLab 容器未运行，正在启动..."
+        docker start "$container_name" 2>/dev/null
+        sleep 15
+    fi
+    
     local max_attempts=60
     local attempt=0
     
-    log_info "等待密码文件生成..."
-    
     while [[ $attempt -lt $max_attempts ]]; do
-        if docker exec "$GITLAB_CONTAINER_NAME" test -f "$password_file" 2>/dev/null; then
-            if docker exec "$GITLAB_CONTAINER_NAME" grep -q "Password:" "$password_file" 2>/dev/null; then
-                echo
-                echo -e "${GREEN}GitLab 初始 root 密码:${NC}"
-                docker exec "$GITLAB_CONTAINER_NAME" grep "Password:" "$password_file"
-                echo
-                log_warn "此密码文件会在 24 小时后自动删除"
-                return
+        if docker exec "$container_name" test -f "$GITLAB_PASSWORD_FILE" 2>/dev/null; then
+            if docker exec "$container_name" grep -q "Password:" "$GITLAB_PASSWORD_FILE" 2>/dev/null; then
+                local password
+                password=$(docker exec "$container_name" grep "Password:" "$GITLAB_PASSWORD_FILE" 2>/dev/null | sed 's/.*Password:\s*//')
+                if [[ -n "$password" ]]; then
+                    echo
+                    echo -e "${BOLD}${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
+                    echo -e "${BOLD}${GREEN}                           GitLab 登录信息                                      ${NC}"
+                    echo -e "${BOLD}${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
+                    echo
+                    echo -e "  ${CYAN}登录地址:${NC}"
+                    echo -e "    - 通过 Nginx: ${YELLOW}https://127.0.0.1:$GITLAB_NGINX_PORT${NC}"
+                    echo -e "    - 直接访问: ${YELLOW}http://127.0.0.1:$GITLAB_PORT_HTTP${NC}"
+                    echo
+                    echo -e "  ${CYAN}用户名:${NC}   ${YELLOW}root${NC}"
+                    echo -e "  ${CYAN}密码:${NC}     ${YELLOW}$password${NC}"
+                    echo
+                    echo -e "${BOLD}${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
+                    echo
+                    log_warn "此密码文件会在 24 小时后自动删除，请尽快修改密码"
+                    echo
+                    
+                    echo -e "${CYAN}【如何修改密码】${NC}"
+                    echo
+                    echo -e "方法 1：登录后修改（推荐）"
+                    echo -e "  1. 使用上面的用户名和密码登录 GitLab"
+                    echo -e "  2. 点击右上角头像 → 选择 \"Preferences\""
+                    echo -e "  3. 点击左侧菜单 \"Password\""
+                    echo -e "  4. 输入当前密码，然后输入新密码并确认"
+                    echo -e "  5. 点击 \"Save password\" 保存"
+                    echo
+                    
+                    echo -e "方法 2：使用命令行修改"
+                    echo -e "  docker exec -it $container_name gitlab-rake \"gitlab:password:reset[root]\""
+                    echo
+                    
+                    echo -e "${CYAN}【注意事项】${NC}"
+                    echo -e "  - 密码长度至少 8 个字符"
+                    echo -e "  - 建议使用强密码，包含大小写字母、数字和特殊字符"
+                    echo -e "  - 修改密码后请妥善保管"
+                    echo
+                    
+                    GITLAB_INITIAL_PASSWORD="$password"
+                    export GITLAB_INITIAL_PASSWORD
+                    return 0
+                fi
             fi
         fi
         
         attempt=$((attempt + 1))
+        log_info "等待密码文件生成... ($attempt/$max_attempts)"
         sleep 10
     done
     
-    log_warn "未能自动获取密码"
-    log_info "请稍后手动执行: docker exec $GITLAB_CONTAINER_NAME cat $password_file"
+    log_warn "未能自动获取 GitLab 密码"
+    log_info "请手动执行: docker exec $container_name cat $GITLAB_PASSWORD_FILE"
+    return 1
 }
 
-# =============================================================================
-# 输出函数
-# =============================================================================
-
-print_summary() {
-    log_step "部署完成"
+get_gitlab_password_simple() {
+    local container_name="${1:-$GITLAB_CONTAINER_NAME}"
     
-    echo
-    echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║                    GitLab CE 部署完成                         ║${NC}"
-    echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
-    echo
+    if docker ps -q --filter "name=$container_name" 2>/dev/null | grep -q .; then
+        if docker exec "$container_name" test -f "$GITLAB_PASSWORD_FILE" 2>/dev/null; then
+            local password
+            password=$(docker exec "$container_name" grep "Password:" "$GITLAB_PASSWORD_FILE" 2>/dev/null | sed 's/.*Password:\s*//')
+            if [[ -n "$password" ]]; then
+                echo "$password"
+                return 0
+            fi
+        fi
+    fi
     
-    echo -e "${CYAN}【访问地址】${NC}"
-    echo "  HTTP:  http://127.0.0.1:${GITLAB_PORT_HTTP}"
-    echo "  HTTPS: https://127.0.0.1:${GITLAB_PORT_HTTPS} (自签名证书)"
-    echo "  SSH:   localhost:${GITLAB_PORT_SSH}"
-    echo
-    
-    echo -e "${CYAN}【默认账户】${NC}"
-    echo "  用户名: root"
-    echo "  密码: 见上方输出 (24小时后删除)"
-    echo
-    
-    echo -e "${CYAN}【容器信息】${NC}"
-    echo "  容器名: $GITLAB_CONTAINER_NAME"
-    echo "  主机名: $GITLAB_HOSTNAME"
-    echo "  镜像: $GITLAB_IMAGE"
-    echo
-    
-    echo -e "${CYAN}【数据目录】${NC}"
-    echo "  配置: $GITLAB_CONFIG_DIR"
-    echo "  日志: $GITLAB_LOGS_DIR"
-    echo "  数据: $GITLAB_DATA_DIR"
-    echo
-    
-    echo -e "${CYAN}【常用命令】${NC}"
-    echo "  查看状态: docker ps | grep gitlab"
-    echo "  查看日志: docker logs -f $GITLAB_CONTAINER_NAME"
-    echo "  进入容器: docker exec -it $GITLAB_CONTAINER_NAME bash"
-    echo "  停止容器: docker stop $GITLAB_CONTAINER_NAME"
-    echo "  启动容器: docker start $GITLAB_CONTAINER_NAME"
-    echo "  重启容器: docker restart $GITLAB_CONTAINER_NAME"
-    echo "  重新配置: docker exec -it $GITLAB_CONTAINER_NAME gitlab-ctl reconfigure"
-    echo
-    
-    echo -e "${YELLOW}【重要提示】${NC}"
-    echo "  - 所有端口绑定 127.0.0.1，仅本地可访问"
-    echo "  - 如需外部访问，请配置 Nginx 反向代理"
-    echo "  - 首次启动可能需要 5-10 分钟"
-    echo "  - 初始密码文件 24 小时后自动删除，请及时修改密码"
-    echo
-    
-    echo -e "${GREEN}════════════════════════════════════════════════════════════════${NC}"
+    log_warn "无法获取 GitLab 密码"
+    return 1
 }
 
-# =============================================================================
-# 主函数
-# =============================================================================
+print_gitlab_summary() {
+    local mode="${1:-standalone}"
+    
+    echo
+    echo -e "${BOLD}${GREEN}┌─────────────────────────────────────────────────────────────────┐${NC}"
+    echo -e "${BOLD}${GREEN}│                      GitLab 服务状态                             │${NC}"
+    echo -e "${BOLD}${GREEN}└─────────────────────────────────────────────────────────────────┘${NC}"
+    echo
+    
+    if docker ps -q --filter "name=$GITLAB_CONTAINER_NAME" 2>/dev/null | grep -q .; then
+        log_info "容器: $GITLAB_CONTAINER_NAME - 运行中 ✓"
+    else
+        log_warn "容器: $GITLAB_CONTAINER_NAME - 未运行"
+    fi
+    
+    if [[ "$mode" == "without_nginx" ]]; then
+        echo
+        echo -e "${BOLD}GitLab 访问地址:${NC}"
+        echo -e "  - 本地访问: ${CYAN}http://127.0.0.1:$GITLAB_PORT_HTTP${NC}"
+        echo -e "  - 网络访问: ${YELLOW}http://<主机IP>:$GITLAB_PORT_HTTP${NC}"
+        echo -e "  - SSH 端口: $GITLAB_PORT_SSH"
+    elif [[ "$mode" == "with_nginx" ]]; then
+        echo
+        echo -e "${BOLD}GitLab 访问地址:${NC}"
+        echo -e "  - Nginx (推荐): ${CYAN}http://127.0.0.1:18441${NC}"
+        echo -e "  - 直连: http://127.0.0.1:$GITLAB_PORT_HTTP"
+        echo -e "  - SSH 端口: $GITLAB_PORT_SSH"
+    fi
+    
+    echo
+    log_warn "GitLab 首次初始化需要 5-10 分钟"
+    log_info "默认用户名: root"
+    echo
+}
+
+show_help() {
+    echo
+    echo -e "${BOLD}DevOpsClaw GitLab 部署脚本${NC}"
+    echo
+    echo -e "用法: $0 [选项]"
+    echo
+    echo -e "选项:"
+    echo -e "  ${CYAN}-h, --help${NC}              显示此帮助信息"
+    echo -e "  ${CYAN}--deploy${NC}                部署 GitLab 服务 (默认)"
+    echo -e "  ${CYAN}--get-password${NC}          获取 GitLab 初始密码"
+    echo -e "  ${CYAN}--status${NC}                查看 GitLab 服务状态"
+    echo -e "  ${CYAN}--stop${NC}                  停止 GitLab 服务"
+    echo -e "  ${CYAN}--start${NC}                 启动 GitLab 服务"
+    echo -e "  ${CYAN}--restart${NC}               重启 GitLab 服务"
+    echo
+    echo -e "环境变量:"
+    echo -e "  GITLAB_PORT_HTTP=${GITLAB_PORT_HTTP}   GitLab HTTP 端口"
+    echo -e "  GITLAB_PORT_HTTPS=${GITLAB_PORT_HTTPS}  GitLab HTTPS 端口"
+    echo -e "  GITLAB_PORT_SSH=${GITLAB_PORT_SSH}    GitLab SSH 端口"
+    echo -e "  GITLAB_CONTAINER_NAME=${GITLAB_CONTAINER_NAME}"
+    echo
+    echo -e "存储配置 (重要!):"
+    echo -e "  ${YELLOW}GITLAB_USE_NAMED_VOLUMES${NC}=${GITLAB_USE_NAMED_VOLUMES}  ${CYAN}使用 Docker 命名卷 (推荐用于 WSL/Windows)${NC}"
+    echo -e "  GITLAB_VOLUME_CONFIG=${GITLAB_VOLUME_CONFIG}"
+    echo -e "  GITLAB_VOLUME_LOGS=${GITLAB_VOLUME_LOGS}"
+    echo -e "  GITLAB_VOLUME_DATA=${GITLAB_VOLUME_DATA}"
+    echo
+    echo -e "  或者使用绑定挂载 (不推荐用于 WSL/Windows):"
+    echo -e "  GITLAB_USE_NAMED_VOLUMES=false"
+    echo -e "  GITLAB_DATA_DIR=${GITLAB_DATA_DIR}"
+    echo
+    echo -e "HTTPS 反向代理配置 (重要!):"
+    echo -e "  ${YELLOW}GITLAB_USE_HTTPS_PROXY${NC}=${GITLAB_USE_HTTPS_PROXY}  ${CYAN}GitLab 知道自己在 HTTPS 反向代理后面${NC}"
+    echo -e "  GITLAB_NGINX_PORT=${GITLAB_NGINX_PORT}  Nginx 监听端口"
+    echo -e "  GITLAB_HOSTNAME=${GITLAB_HOSTNAME}      用于构建 external_url"
+    echo
+    echo -e "  【说明】"
+    echo -e "  当使用 Nginx 作为 HTTPS 反向代理时："
+    echo -e "  - 客户端 -> Nginx (HTTPS) -> GitLab (HTTP)"
+    echo -e "  - GitLab 重定向时需要知道原始请求是 HTTPS"
+    echo -e "  - 否则会出现重定向到 HTTP 而不是 HTTPS 的问题"
+    echo
+    echo -e "示例:"
+    echo -e "  $0                              部署 GitLab (使用命名卷)"
+    echo -e "  $0 --get-password               获取密码"
+    echo -e "  $0 --status                     查看状态"
+    echo
+    echo -e "WSL/Windows 用户注意:"
+    echo -e "  ${RED}Windows 文件系统不支持 Linux 权限模型${NC}"
+    echo -e "  推荐使用 GITLAB_USE_NAMED_VOLUMES=true (默认)"
+    echo
+    echo -e "使用 Nginx 反向代理注意:"
+    echo -e "  ${RED}确保 GITLAB_USE_HTTPS_PROXY=true${NC}"
+    echo -e "  否则 GitLab 会重定向到 HTTP 而不是 HTTPS"
+    echo
+}
 
 main() {
+    local action="deploy"
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            --deploy)
+                action="deploy"
+                shift
+                ;;
+            --get-password)
+                action="get_password"
+                shift
+                ;;
+            --status)
+                action="status"
+                shift
+                ;;
+            --stop)
+                action="stop"
+                shift
+                ;;
+            --start)
+                action="start"
+                shift
+                ;;
+            --restart)
+                action="restart"
+                shift
+                ;;
+            *)
+                log_warn "未知参数: $1"
+                show_help
+                exit 1
+                ;;
+        esac
+    done
+    
     log_banner
     
-    # 检查
-    check_root
-    check_docker
-    
-    # 检查是否使用 docker-compose
-    check_docker_compose
-    
-    # 部署
-    create_directories
-    pull_image
-    cleanup_old
-    start_container
-    wait_for_gitlab
-    get_initial_password
-    
-    # 输出
-    print_summary
-    
-    log_info "GitLab 部署完成!"
+    case "$action" in
+        deploy)
+            check_root
+            check_docker
+            if [[ -f "$PROJECT_DIR/.env" ]]; then
+                load_env "$PROJECT_DIR/.env"
+            fi
+            deploy_gitlab
+            print_gitlab_summary "without_nginx"
+            log_info "GitLab 部署完成!"
+            ;;
+        get_password)
+            check_root
+            check_docker
+            get_gitlab_password
+            ;;
+        status)
+            print_gitlab_summary "standalone"
+            ;;
+        stop)
+            check_root
+            log_step "停止 GitLab 服务"
+            docker stop "$GITLAB_CONTAINER_NAME" 2>/dev/null || true
+            log_info "GitLab 已停止"
+            ;;
+        start)
+            check_root
+            log_step "启动 GitLab 服务"
+            docker start "$GITLAB_CONTAINER_NAME" 2>/dev/null
+            log_info "GitLab 已启动"
+            ;;
+        restart)
+            check_root
+            log_step "重启 GitLab 服务"
+            docker restart "$GITLAB_CONTAINER_NAME" 2>/dev/null
+            log_info "GitLab 已重启"
+            ;;
+    esac
 }
 
-# =============================================================================
-# 信号处理
-# =============================================================================
-
-trap 'log_warn "脚本被用户中断"; exit 1' INT TERM
-
-# 执行主函数
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi

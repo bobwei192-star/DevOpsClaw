@@ -1,84 +1,83 @@
 #!/bin/bash
 # =============================================================================
-# Docker 安装脚本
+# DevOpsClaw Docker 安装脚本
 # =============================================================================
-# 支持: Ubuntu 22.04 / 24.04 (WSL & 原生)
-# 功能:
-#   - 自动检测系统版本
-#   - 安装 Docker CE + Docker Compose Plugin
-#   - 配置镜像加速器
-#   - 添加当前用户到 docker 组
+# 功能：
+#   - 安装 Docker CE
+#   - 安装 Docker Compose
+#   - 配置 Docker 镜像加速器
+#   - 多源镜像拉取函数
 #
-# 使用方法:
-#   chmod +x install_docker.sh
-#   sudo ./install_docker.sh
+# 使用方法：
+#   - 独立运行: sudo ./deploy_docker/install_docker.sh
+#   - 被主脚本调用: source deploy_docker/install_docker.sh
 #
 # =============================================================================
 
-set -euo pipefail
+set -e
 
-# =============================================================================
-# 配置变量
-# =============================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+LIB_DIR="$PROJECT_DIR/lib"
+DEPLOY_LOG="${PROJECT_DIR}/deploy.log"
+DOCKER_COMPOSE_CMD=""
 
-# Docker 镜像加速器列表
-MIRRORS=(
-    "https://docker.1ms.run"
-    "https://docker.xuanyuan.me"
-    "https://docker.xuanyuan.us.kg"
-    "https://docker.chenby.cn"
-)
-
-# =============================================================================
-# 颜色定义
-# =============================================================================
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-# =============================================================================
-# 日志函数
-# =============================================================================
 log_info() {
-    echo -e "${GREEN}[INFO]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"
+    local msg="$1"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    if [[ -n "$DEPLOY_LOG" ]]; then
+        echo -e "${GREEN}[INFO]${NC} $timestamp - $msg" | tee -a "$DEPLOY_LOG"
+    else
+        echo -e "${GREEN}[INFO]${NC} $timestamp - $msg"
+    fi
 }
 
 log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"
+    local msg="$1"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    if [[ -n "$DEPLOY_LOG" ]]; then
+        echo -e "${YELLOW}[WARN]${NC} $timestamp - $msg" | tee -a "$DEPLOY_LOG"
+    else
+        echo -e "${YELLOW}[WARN]${NC} $timestamp - $msg"
+    fi
 }
 
 log_error() {
-    echo -e "${RED}[ERROR]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"
+    local msg="$1"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    if [[ -n "$DEPLOY_LOG" ]]; then
+        echo -e "${RED}[ERROR]${NC} $timestamp - $msg" | tee -a "$DEPLOY_LOG"
+    else
+        echo -e "${RED}[ERROR]${NC} $timestamp - $msg"
+    fi
 }
 
 log_step() {
-    echo -e "\n${BLUE}=== $1 ===${NC}"
+    local msg="$1"
+    echo -e "\n${BLUE}=== $msg ===${NC}"
 }
 
 log_banner() {
-    echo -e "${CYAN}"
+    echo -e "${PURPLE}"
     cat << 'EOF'
-   ____             _             _           
-  |  _ \  ___   ___| |_ __ _ _ __| |_ ___ _ __ 
-  | | | |/ _ \ / __| __/ _` | '__| __/ _ \ '__|
-  | |_| | (_) | (__| || (_| | |  | ||  __/ |   
-  |____/ \___/ \___|\__\__,_|_|   \__\___|_|   
-                                                 
+  ____             ____  _             ____ _                    
+ |  _ \  _____   _/ ___|| | _____     / ___| | __ ___      ____
+ | | | |/ _ \ \ / /\___ \| |/ _ \ \   / /   | |/ _` \ \ /\ / /
+ | |_| |  __/\ V /  ___) | | (_) \ \_/ /    | | (_| |\ V  V / 
+ |____/ \___| \_/  |____/|_|\___/ \___/     |_|\__,_| \_/\_/  
+                                                                   
 EOF
     echo -e "${NC}"
-    echo -e "${CYAN}Docker 安装脚本${NC}"
-    echo -e "${CYAN}================${NC}"
 }
-
-# =============================================================================
-# 检查函数
-# =============================================================================
 
 check_root() {
     if [[ $EUID -ne 0 ]]; then
@@ -88,357 +87,552 @@ check_root() {
     fi
 }
 
-detect_os() {
-    log_step "检测系统信息"
+check_docker() {
+    log_step "检查 Docker 环境"
     
-    if [[ -f /etc/os-release ]]; then
-        . /etc/os-release
-        OS_NAME="$ID"
-        OS_VERSION="$VERSION_ID"
-        OS_CODENAME="$VERSION_CODENAME"
-    else
-        log_error "无法检测系统版本"
+    if ! command -v docker &>/dev/null; then
+        log_error "Docker 未安装"
+        log_info "请先安装 Docker 或运行: $0"
         exit 1
     fi
     
-    log_info "操作系统: $PRETTY_NAME"
-    log_info "版本代号: $OS_CODENAME"
+    log_info "Docker 已安装: $(docker --version)"
     
-    # 检查是否为 Ubuntu
-    if [[ "$OS_NAME" != "ubuntu" ]]; then
-        log_warn "此脚本主要针对 Ubuntu 优化，其他系统可能不兼容"
-        read -p "是否继续? (y/n): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            log_info "用户取消安装"
-            exit 0
-        fi
-    fi
-    
-    # 检查版本
-    if [[ "$OS_VERSION" != "22.04" && "$OS_VERSION" != "24.04" ]]; then
-        log_warn "建议使用 Ubuntu 22.04 或 24.04"
-        read -p "是否继续? (y/n): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            exit 0
-        fi
-    fi
-}
-
-check_existing_docker() {
-    log_step "检查现有 Docker 安装"
-    
-    if command -v docker &>/dev/null; then
-        local docker_version=$(docker --version 2>/dev/null)
-        log_warn "检测到已安装 Docker: $docker_version"
-        echo
-        echo "选项:"
-        echo "  [1] 重新安装 Docker（会删除现有容器和镜像）"
-        echo "  [2] 仅配置镜像加速器"
-        echo "  [3] 跳过，退出"
-        echo
-        read -p "请选择 (1-3): " choice
-        
-        case $choice in
-            1)
-                log_info "准备重新安装 Docker..."
-                uninstall_existing_docker
-                ;;
-            2)
-                log_info "仅配置镜像加速器..."
-                configure_mirrors
-                verify_installation
-                exit 0
-                ;;
-            3)
-                log_info "退出安装"
-                exit 0
-                ;;
-            *)
-                log_error "无效选项"
-                exit 1
-                ;;
-        esac
+    if docker compose version &>/dev/null; then
+        DOCKER_COMPOSE_CMD="docker compose"
+        log_info "Docker Compose (plugin) 已安装: $(docker compose version --short 2>/dev/null || echo "可用")"
+    elif command -v docker-compose &>/dev/null; then
+        DOCKER_COMPOSE_CMD="docker-compose"
+        log_info "Docker Compose (standalone) 已安装: $(docker-compose version --short 2>/dev/null || echo "可用")"
     else
-        log_info "未检测到 Docker，开始全新安装"
+        log_error "Docker Compose 未安装"
+        exit 1
     fi
 }
 
-uninstall_existing_docker() {
-    log_step "卸载现有 Docker"
-    
-    log_info "停止 Docker 服务..."
-    systemctl stop docker.service docker.socket 2>/dev/null || true
-    
-    log_info "移除 Docker 包..."
-    apt-get remove -y docker.io docker-doc docker-compose podman-docker containerd runc 2>/dev/null || true
-    apt-get remove -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin 2>/dev/null || true
-    
-    log_warn "注意: /var/lib/docker 目录（容器、镜像、卷）未删除"
-    read -p "是否删除 /var/lib/docker 目录? (y/n): " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        log_info "删除 /var/lib/docker 目录..."
-        rm -rf /var/lib/docker
-        rm -rf /var/lib/containerd
-        log_info "已删除"
+detect_os() {
+    if [[ -f /etc/os-release ]]; then
+        . /etc/os-release
+        OS_ID="$ID"
+        OS_VERSION_ID="$VERSION_ID"
+        OS_NAME="$PRETTY_NAME"
+    elif [[ -f /etc/centos-release ]]; then
+        OS_ID="centos"
+        OS_VERSION_ID=$(cat /etc/centos-release | grep -oP '\d+\.\d+')
+        OS_NAME=$(cat /etc/centos-release)
+    elif [[ -f /etc/redhat-release ]]; then
+        OS_ID="rhel"
+        OS_VERSION_ID=$(cat /etc/redhat-release | grep -oP '\d+\.\d+')
+        OS_NAME=$(cat /etc/redhat-release)
+    else
+        log_error "无法检测操作系统版本"
+        exit 1
     fi
+    
+    log_info "检测到操作系统: $OS_NAME"
 }
 
-# =============================================================================
-# 安装函数
-# =============================================================================
-
-install_dependencies() {
-    log_step "安装依赖包"
+install_docker_ubuntu() {
+    log_step "在 Ubuntu/Debian 上安装 Docker"
     
-    log_info "更新 apt 包索引..."
-    apt-get update -qq
+    log_info "更新软件包列表..."
+    apt-get update -y
     
-    log_info "安装必要的依赖..."
-    apt-get install -y -qq \
+    log_info "安装依赖包..."
+    apt-get install -y \
+        apt-transport-https \
         ca-certificates \
         curl \
         gnupg \
-        lsb-release \
-        software-properties-common \
-        apt-transport-https
+        lsb-release
     
-    log_info "依赖安装完成 ✓"
-}
-
-add_docker_repo() {
-    log_step "添加 Docker 官方源"
-    
-    # 创建 keyrings 目录
-    install -m 0755 -d /etc/apt/keyrings
-    
-    # 添加 Docker GPG 密钥
     log_info "添加 Docker GPG 密钥..."
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-    chmod a+r /etc/apt/keyrings/docker.gpg
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg 2>/dev/null || {
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
+    }
     
-    # 添加 Docker 仓库
-    log_info "添加 Docker 官方仓库..."
-    echo \
-        "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-        $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+    log_info "设置 Docker 仓库..."
+    if [[ -d /usr/share/keyrings ]]; then
+        echo \
+            "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \
+            $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+    else
+        add-apt-repository \
+            "deb [arch=$(dpkg --print-architecture)] https://download.docker.com/linux/ubuntu \
+            $(lsb_release -cs) stable"
+    fi
     
-    log_info "更新 apt 包索引..."
-    apt-get update -qq
-    
-    log_info "Docker 仓库添加完成 ✓"
-}
-
-install_docker_packages() {
-    log_step "安装 Docker 包"
-    
-    log_info "安装 Docker CE, CLI, Containerd, Docker Compose..."
-    apt-get install -y -qq \
+    log_info "更新软件包列表并安装 Docker CE..."
+    apt-get update -y
+    apt-get install -y \
         docker-ce \
         docker-ce-cli \
         containerd.io \
         docker-buildx-plugin \
         docker-compose-plugin
-    
-    # 启动 Docker 服务
-    log_info "启动 Docker 服务..."
-    systemctl enable docker.service
-    systemctl enable containerd.service
-    systemctl start docker.service
-    systemctl start containerd.service
-    
-    log_info "Docker 包安装完成 ✓"
 }
 
-configure_mirrors() {
+install_docker_centos() {
+    log_step "在 CentOS/RHEL 上安装 Docker"
+    
+    log_info "安装依赖包..."
+    yum install -y yum-utils device-mapper-persistent-data lvm2
+    
+    log_info "设置 Docker 仓库..."
+    yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+    
+    log_info "启用 nightly 仓库（可选）..."
+    yum-config-manager --enable docker-ce-nightly 2>/dev/null || true
+    
+    log_info "安装 Docker CE..."
+    yum install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    
+    log_info "启动 Docker 服务..."
+    systemctl start docker
+    systemctl enable docker
+}
+
+install_docker() {
+    detect_os
+    
+    if command -v docker &>/dev/null; then
+        log_info "Docker 已安装: $(docker --version)"
+        
+        local docker_version=$(docker --version | grep -oP '\d+\.\d+\.\d+' | head -1)
+        local major_version=$(echo "$docker_version" | cut -d. -f1)
+        local minor_version=$(echo "$docker_version" | cut -d. -f2)
+        
+        if [[ $major_version -lt 20 || ($major_version -eq 20 && $minor_version -lt 10) ]]; then
+            log_warn "Docker 版本较旧 ($docker_version)，建议升级到 20.10+"
+        fi
+        
+        if ! docker info &>/dev/null; then
+            log_warn "Docker 已安装但无法运行，尝试启动..."
+            if command -v systemctl &>/dev/null; then
+                systemctl start docker
+            elif command -v service &>/dev/null; then
+                service docker start
+            fi
+        fi
+        
+        return 0
+    fi
+    
+    log_step "安装 Docker CE"
+    
+    case "$OS_ID" in
+        ubuntu|debian|linuxmint)
+            install_docker_ubuntu
+            ;;
+        centos|rhel|fedora)
+            install_docker_centos
+            ;;
+        *)
+            log_error "不支持的操作系统: $OS_ID"
+            log_info "请手动安装 Docker: https://docs.docker.com/engine/install/"
+            exit 1
+            ;;
+    esac
+    
+    log_info "验证 Docker 安装..."
+    docker run hello-world
+    
+    log_info "Docker 安装完成: $(docker --version)"
+}
+
+install_docker_compose() {
+    log_step "安装 Docker Compose"
+    
+    if docker compose version &>/dev/null; then
+        log_info "Docker Compose (plugin) 已安装: $(docker compose version --short 2>/dev/null || echo "可用")"
+        return 0
+    fi
+    
+    if command -v docker-compose &>/dev/null; then
+        log_info "Docker Compose (standalone) 已安装: $(docker-compose version --short 2>/dev/null || echo "可用")"
+        return 0
+    fi
+    
+    log_warn "Docker Compose 未安装，正在安装..."
+    
+    local COMPOSE_VERSION="2.23.3"
+    local COMPOSE_URL="https://github.com/docker/compose/releases/download/v${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)"
+    
+    log_info "下载 Docker Compose $COMPOSE_VERSION..."
+    if curl -SL "$COMPOSE_URL" -o /usr/local/bin/docker-compose; then
+        chmod +x /usr/local/bin/docker-compose
+        log_info "Docker Compose 安装完成: $(docker-compose --version)"
+    else
+        log_error "Docker Compose 下载失败"
+        log_info "请手动安装: https://docs.docker.com/compose/install/"
+        exit 1
+    fi
+}
+
+configure_docker_mirrors() {
     log_step "配置 Docker 镜像加速器"
     
-    # 备份现有配置
-    if [[ -f /etc/docker/daemon.json ]]; then
-        log_info "备份现有 daemon.json..."
-        cp /etc/docker/daemon.json /etc/docker/daemon.json.bak
+    local daemon_json="/etc/docker/daemon.json"
+    local daemon_dir="/etc/docker"
+    
+    if [[ ! -d "$daemon_dir" ]]; then
+        mkdir -p "$daemon_dir"
     fi
     
-    # 创建 Docker 配置目录
-    mkdir -p /etc/docker
-    
-    # 生成镜像加速器 JSON
-    log_info "配置镜像加速器..."
-    
-    # 构建 JSON 数组
-    local mirrors_json="["
-    local first=true
-    for mirror in "${MIRRORS[@]}"; do
-        if [[ "$first" == true ]]; then
-            first=false
-        else
-            mirrors_json+=","
+    local existing_mirrors=()
+    if [[ -f "$daemon_json" ]]; then
+        log_info "现有的 daemon.json 配置:"
+        cat "$daemon_json"
+        
+        if command -v jq &>/dev/null; then
+            while IFS= read -r mirror; do
+                existing_mirrors+=("$mirror")
+            done < <(jq -r '.["registry-mirrors"] // [] | .[]' "$daemon_json" 2>/dev/null)
         fi
-        mirrors_json+="\"$mirror\""
-    done
-    mirrors_json+="]"
+    fi
     
-    # 写入配置文件
-    cat > /etc/docker/daemon.json << EOF
+    local new_mirrors=(
+        "https://docker.xuanyuan.me"
+        "https://docker.1ms.run"
+        "https://xuanyuan.cloud"
+        "https://docker.m.daocloud.io"
+        "https://dockerproxy.com"
+        "https://atomhub.openatom.cn"
+        "https://docker.nju.edu.cn"
+    )
+    
+    local all_mirrors=()
+    for mirror in "${existing_mirrors[@]}"; do
+        if [[ -n "$mirror" ]]; then
+            all_mirrors+=("$mirror")
+        fi
+    done
+    for mirror in "${new_mirrors[@]}"; do
+        local exists=false
+        for existing in "${all_mirrors[@]}"; do
+            if [[ "$existing" == "$mirror" ]]; then
+                exists=true
+                break
+            fi
+        done
+        if [[ "$exists" == false ]]; then
+            all_mirrors+=("$mirror")
+        fi
+    done
+    
+    local mirrors_json=""
+    if [[ ${#all_mirrors[@]} -gt 0 ]]; then
+        mirrors_json=$(printf '%s\n' "${all_mirrors[@]}" | sed 's/^/        "/; s/$/"/' | tr '\n' ',' | sed 's/,$//')
+    fi
+    
+    log_info "准备应用以下镜像加速器配置:"
+    cat > "/tmp/daemon.json.tmp" << EOF
 {
-  "registry-mirrors": $mirrors_json
+    "registry-mirrors": [
+${mirrors_json}
+    ],
+    "log-driver": "json-file",
+    "log-opts": {
+        "max-size": "100m",
+        "max-file": "5"
+    }
 }
 EOF
+    cat "/tmp/daemon.json.tmp"
+    echo
     
-    log_info "已写入 /etc/docker/daemon.json"
-    cat /etc/docker/daemon.json
+    log_info "正在应用配置..."
+    mv "/tmp/daemon.json.tmp" "$daemon_json"
     
-    # 重启 Docker
-    log_info "重启 Docker 服务..."
-    systemctl daemon-reload
-    systemctl restart docker
-    
-    log_info "镜像加速器配置完成 ✓"
-}
-
-configure_user_permissions() {
-    log_step "配置用户权限"
-    
-    # 获取当前用户（即使使用 sudo）
-    local current_user="${SUDO_USER:-$USER}"
-    
-    if [[ -n "$current_user" && "$current_user" != "root" ]]; then
-        log_info "将用户 '$current_user' 添加到 docker 组..."
-        
-        # 创建 docker 组（如果不存在）
-        getent group docker >/dev/null || groupadd docker
-        
-        # 添加用户到 docker 组
-        usermod -aG docker "$current_user"
-        
-        log_info "用户权限配置完成 ✓"
-        log_warn "⚠️  重要: 请注销并重新登录以使用户组变更生效"
-        log_info "    或运行: newgrp docker（当前会话临时生效）"
-    else
-        log_warn "无法检测到当前用户，请手动添加用户到 docker 组:"
-        log_info "  sudo usermod -aG docker your_username"
+    log_info "重启 Docker 服务以应用配置..."
+    if command -v systemctl &>/dev/null; then
+        systemctl daemon-reload
+        systemctl restart docker
+    elif command -v service &>/dev/null; then
+        service docker restart
     fi
+    
+    sleep 3
+    
+    if docker info &>/dev/null; then
+        log_info "✓ Docker 配置已生效"
+    else
+        log_warn "Docker 重启后可能需要手动验证配置"
+    fi
+    
+    echo
+    echo -e "${GREEN}镜像加速器配置完成${NC}"
+    echo
+    
+    log_info "镜像源说明:"
+    log_info "  - docker.1ms.run      (国内高速镜像)"
+    log_info "  - docker.xuanyuan.me   (轩辕镜像)"
+    log_info "  - docker.chenby.cn     (陈冰宇镜像)"
+    log_info "  - hub.rat.dev          (Rat 镜像)"
+    echo
+    log_info "如果仍然无法拉取镜像，请考虑:"
+    log_info "  1. 检查网络连接"
+    log_info "  2. 尝试使用代理: export HTTP_PROXY=http://127.0.0.1:7890"
+    log_info "  3. 手动拉取镜像: docker pull <镜像名>"
 }
 
-# =============================================================================
-# 验证函数
-# =============================================================================
-
-verify_installation() {
-    log_step "验证安装"
+pull_image_with_fallback() {
+    local service="$1"
+    local target_tag="${2:-}"
     
-    echo
+    local -a sources=()
+    local -a source_names=()
     
-    # 检查 Docker 版本
-    log_info "1. Docker 版本:"
-    docker version
+    case "$service" in
+        openclaw)
+            sources=(
+                "ghcr.io/openclaw/openclaw:latest"
+                "docker.io/openclaw/openclaw:latest"
+            )
+            source_names=(
+                "github-ghcr"
+                "dockerhub"
+            )
+            ;;
+        jenkins)
+            sources=(
+                "docker.io/jenkins/jenkins:lts-jdk17"
+                "registry.cn-hangzhou.aliyuncs.com/library/jenkins:lts-jdk17"
+                "docker.mirrors.sjtug.sjtu.edu.cn/library/jenkins:lts-jdk17"
+            )
+            source_names=(
+                "dockerhub"
+                "aliyun"
+                "sjtug"
+            )
+            ;;
+        gitlab)
+            sources=(
+                "docker.io/gitlab/gitlab-ce:latest"
+                "registry.cn-hangzhou.aliyuncs.com/gitlab/gitlab-ce:latest"
+                "docker.mirrors.sjtug.sjtu.edu.cn/gitlab/gitlab-ce:latest"
+            )
+            source_names=(
+                "dockerhub"
+                "aliyun"
+                "sjtug"
+            )
+            ;;
+        nginx)
+            sources=(
+                "docker.io/library/nginx:alpine"
+                "registry.cn-hangzhou.aliyuncs.com/library/nginx:alpine"
+                "docker.mirrors.sjtug.sjtu.edu.cn/library/nginx:alpine"
+            )
+            source_names=(
+                "dockerhub"
+                "aliyun"
+                "sjtug"
+            )
+            ;;
+        *)
+            log_error "未知服务: $service"
+            return 1
+            ;;
+    esac
     
-    echo
+    local max_retries=2
+    local pull_timeout=120
+    local success=false
+    local pulled_image=""
     
-    # 检查 Docker Compose
-    log_info "2. Docker Compose 版本:"
-    docker compose version
+    log_info "尝试拉取 $service 镜像（支持多源重试，每个源最多 $max_retries 次，超时 $pull_timeout 秒）..."
     
-    echo
-    
-    # 检查镜像加速器
-    log_info "3. 镜像加速器配置:"
-    docker info | grep -A 10 "Registry Mirrors" || echo "    未检测到"
-    
-    echo
-    
-    # 运行测试容器
-    log_info "4. 运行测试容器 (hello-world)..."
-    docker run --rm hello-world
-    
-    echo
-    log_info "✓ Docker 安装和配置完成!"
-}
-
-# =============================================================================
-# 输出函数
-# =============================================================================
-
-print_summary() {
-    log_step "安装完成"
-    
-    echo
-    echo -e "${GREEN}╔════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║                    Docker 安装完成                                ║${NC}"
-    echo -e "${GREEN}╚════════════════════════════════════════════════════════════════╝${NC}"
-    echo
-    
-    echo -e "${CYAN}【已安装组件】${NC}"
-    local docker_ver=$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo "最新版")
-    local compose_ver=$(docker compose version --short 2>/dev/null || echo "最新版")
-    echo "  Docker CE:         $docker_ver"
-    echo "  Docker CLI:        $docker_ver"
-    echo "  Containerd:        已安装"
-    echo "  Docker Compose:    $compose_ver"
-    echo "  Buildx Plugin:     已安装"
-    echo
-    
-    echo -e "${CYAN}【镜像加速器】${NC}"
-    for mirror in "${MIRRORS[@]}"; do
-        echo "  - $mirror"
+    local idx=0
+    for image in "${sources[@]}"; do
+        local source_name="${source_names[$idx]:-$idx}"
+        idx=$((idx + 1))
+        
+        if [[ -z "$image" ]]; then
+            continue
+        fi
+        
+        log_info "尝试源 [$source_name]: $image"
+        
+        for ((i=1; i<=max_retries; i++)); do
+            log_info "  第 $i 次尝试拉取... (超时: ${pull_timeout}秒)"
+            
+            if command -v timeout &>/dev/null; then
+                if timeout $pull_timeout docker pull "$image" 2>&1; then
+                    log_info "  ✓ 镜像拉取成功: $image"
+                    pulled_image="$image"
+                    success=true
+                    break 2
+                else
+                    local exit_code=$?
+                    if [[ $exit_code -eq 124 ]]; then
+                        log_warn "  第 $i 次尝试超时 (${pull_timeout}秒)"
+                    else
+                        log_warn "  第 $i 次尝试失败 (退出码: $exit_code)"
+                    fi
+                fi
+            else
+                if docker pull "$image"; then
+                    log_info "  ✓ 镜像拉取成功: $image"
+                    pulled_image="$image"
+                    success=true
+                    break 2
+                else
+                    log_warn "  第 $i 次尝试失败"
+                fi
+            fi
+            
+            if [[ $i -lt $max_retries ]]; then
+                log_info "  等待 3 秒后重试..."
+                sleep 3
+            fi
+        done
+        
+        if [[ "$success" != true ]]; then
+            log_warn "源 [$source_name] 失败，尝试下一个源..."
+        fi
     done
-    echo
     
-    echo -e "${CYAN}【常用命令】${NC}"
-    echo "  查看版本:  docker version"
-    echo "  查看信息:  docker info"
-    echo "  运行测试:  docker run hello-world"
-    echo "  查看镜像:  docker images"
-    echo "  查看容器:  docker ps -a"
-    echo "  重启服务:  sudo systemctl restart docker"
-    echo
+    if [[ "$success" != true ]]; then
+        log_error "所有镜像源都尝试过了，仍然失败"
+        log_warn "可能的解决方案:"
+        echo
+        
+        echo -e "${CYAN}【方案 1】配置 Docker 镜像加速器${NC}"
+        echo "  本脚本已自动配置，如已运行请跳过。手动配置方法:"
+        echo
+        echo '  创建或编辑 /etc/docker/daemon.json:'
+        echo
+        echo '  {'
+        echo '    "registry-mirrors": ['
+        echo '      "https://docker.1ms.run",'
+        echo '      "https://docker.xuanyuan.me",'
+        echo '      "https://docker.xuanyuan.us.kg",'
+        echo '      "https://docker.chenby.cn",'
+        echo '      "https://hub.rat.dev",'
+        echo '      "https://docker.1panel.top"'
+        echo '    ]'
+        echo '  }'
+        echo
+        echo "  然后执行:"
+        echo "    sudo systemctl daemon-reload"
+        echo "    sudo systemctl restart docker"
+        echo
+        
+        echo -e "${CYAN}【方案 2】配置代理访问 GHCR${NC}"
+        echo "  export HTTP_PROXY=http://127.0.0.1:7890"
+        echo "  export HTTPS_PROXY=http://127.0.0.1:7890"
+        echo "  sudo -E docker pull ghcr.io/openclaw/openclaw:latest"
+        echo
+        
+        return 1
+    fi
     
-    echo -e "${YELLOW}【重要提示】${NC}"
-    echo "  ⚠️  如果当前用户需要非 root 使用 Docker，请:"
-    echo "     1. 注销并重新登录"
-    echo "     2. 或运行: newgrp docker（临时生效）"
-    echo
-    echo "  ⚠️  如果在 WSL 中使用 Docker Desktop，请确保:"
-    echo "     1. 打开 Docker Desktop Settings"
-    echo "     2. Resources → WSL Integration → 启用你的发行版"
-    echo
+    if [[ -n "$target_tag" && "$pulled_image" != "$target_tag" ]]; then
+        log_info "重命名镜像: $pulled_image -> $target_tag"
+        if docker tag "$pulled_image" "$target_tag"; then
+            log_info "  ✓ 镜像重命名成功"
+        else
+            log_warn "  镜像重命名失败，但拉取已成功"
+        fi
+    fi
     
-    log_info "Docker 安装完成!"
+    return 0
 }
 
-# =============================================================================
-# 主函数
-# =============================================================================
+show_help() {
+    echo
+    echo -e "${BOLD}DevOpsClaw Docker 安装脚本${NC}"
+    echo
+    echo -e "用法: $0 [选项]"
+    echo
+    echo -e "选项:"
+    echo -e "  ${CYAN}-h, --help${NC}              显示此帮助信息"
+    echo -e "  ${CYAN}--install${NC}               安装 Docker 和 Docker Compose (默认)"
+    echo -e "  ${CYAN}--configure-mirrors${NC}     只配置镜像加速器"
+    echo -e "  ${CYAN}--pull <service>${NC}        拉取指定服务的镜像"
+    echo -e "  ${CYAN}--check${NC}                 检查 Docker 环境"
+    echo
+    echo -e "服务列表:"
+    echo -e "  ${GREEN}openclaw${NC}                OpenClaw 镜像"
+    echo -e "  ${GREEN}jenkins${NC}                 Jenkins 镜像"
+    echo -e "  ${GREEN}gitlab${NC}                  GitLab 镜像"
+    echo -e "  ${GREEN}nginx${NC}                   Nginx 镜像"
+    echo
+    echo -e "示例:"
+    echo -e "  $0                              安装 Docker 并配置镜像"
+    echo -e "  $0 --configure-mirrors         只配置镜像加速器"
+    echo -e "  $0 --pull jenkins              拉取 Jenkins 镜像"
+    echo -e "  $0 --check                     检查 Docker 环境"
+    echo
+}
 
 main() {
+    local action="install"
+    local pull_service=""
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            --install)
+                action="install"
+                shift
+                ;;
+            --configure-mirrors)
+                action="configure_mirrors"
+                shift
+                ;;
+            --pull)
+                action="pull"
+                pull_service="$2"
+                shift 2
+                ;;
+            --check)
+                action="check"
+                shift
+                ;;
+            *)
+                log_warn "未知参数: $1"
+                show_help
+                exit 1
+                ;;
+        esac
+    done
+    
     log_banner
     
-    # 检查
-    check_root
-    detect_os
-    check_existing_docker
-    
-    # 安装
-    install_dependencies
-    add_docker_repo
-    install_docker_packages
-    configure_mirrors
-    configure_user_permissions
-    
-    # 验证
-    verify_installation
-    
-    # 输出
-    print_summary
+    case "$action" in
+        install)
+            check_root
+            install_docker
+            install_docker_compose
+            configure_docker_mirrors
+            log_info "Docker 安装和配置完成!"
+            ;;
+        configure_mirrors)
+            check_root
+            configure_docker_mirrors
+            log_info "镜像加速器配置完成!"
+            ;;
+        pull)
+            check_docker
+            if [[ -z "$pull_service" ]]; then
+                log_error "请指定要拉取的服务"
+                show_help
+                exit 1
+            fi
+            pull_image_with_fallback "$pull_service"
+            ;;
+        check)
+            check_docker
+            log_info "Docker 环境检查通过!"
+            ;;
+    esac
 }
 
-# =============================================================================
-# 信号处理
-# =============================================================================
-
-trap 'log_warn "脚本被用户中断"; exit 1' INT TERM
-
-# 执行主函数
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi

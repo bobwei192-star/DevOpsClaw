@@ -1,44 +1,31 @@
 #!/bin/bash
 # =============================================================================
-# Jenkins Docker 安装脚本 v4.0.0
+# DevOpsClaw Jenkins 部署脚本
 # =============================================================================
-# 注意: 推荐使用项目根目录的 deploy_all.sh 或 docker-compose up 进行部署
+# 功能：
+#   - 部署 Jenkins 服务
+#   - 配置 Jenkins 上下文路径
+#   - 获取 Jenkins 初始密码
 #
-# 此脚本作为备选方案，用于单独部署 Jenkins
+# 使用方法：
+#   - 独立运行: sudo ./deploy_jenkins/deploy_jenkins.sh
+#   - 被主脚本调用: source deploy_jenkins/deploy_jenkins.sh
 #
-# 端口配置 (与 docker-compose.yml 一致):
-#   - Web:   8081 (宿主机) -> 8080 (容器)
-#   - Agent: 50000 (宿主机) -> 50000 (容器)
-#
-# 使用方法:
-#   chmod +x deploy_jenkins.sh
-#   sudo ./deploy_jenkins.sh
+# 端口配置 (新规划):
+#   - Jenkins Web: 18081
+#   - Jenkins Agent: 50000
+#   - Nginx Jenkins: 18440
 #
 # =============================================================================
 
-set -euo pipefail
+set -e
 
-# =============================================================================
-# 配置变量
-# =============================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-ENV_FILE="$PROJECT_ROOT/.env"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+LIB_DIR="$PROJECT_DIR/lib"
+DEPLOY_LOG="${PROJECT_DIR}/deploy.log"
+DOCKER_COMPOSE_CMD=""
 
-# 端口配置 (从环境变量读取，或使用默认值)
-JENKINS_PORT_WEB=${JENKINS_PORT_WEB:-8081}
-JENKINS_PORT_AGENT=${JENKINS_PORT_AGENT:-50000}
-JENKINS_CONTAINER_NAME=${JENKINS_CONTAINER_NAME:-devopsclaw-jenkins}
-JENKINS_IMAGE=${JENKINS_IMAGE:-jenkins/jenkins:lts-jdk17}
-JENKINS_PREFIX=${JENKINS_PREFIX:-/jenkins}
-JENKINS_JAVA_OPTS=${JENKINS_JAVA_OPTS:--Xmx2g -Xms512m}
-
-# 数据目录
-JENKINS_HOME_DIR=${JENKINS_HOME_DIR:-/srv/jenkins/home}
-
-# =============================================================================
-# 颜色定义
-# =============================================================================
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -48,43 +35,53 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-# =============================================================================
-# 日志函数
-# =============================================================================
 log_info() {
-    echo -e "${GREEN}[INFO]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"
+    local msg="$1"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    if [[ -n "$DEPLOY_LOG" ]]; then
+        echo -e "${GREEN}[INFO]${NC} $timestamp - $msg" | tee -a "$DEPLOY_LOG"
+    else
+        echo -e "${GREEN}[INFO]${NC} $timestamp - $msg"
+    fi
 }
 
 log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"
+    local msg="$1"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    if [[ -n "$DEPLOY_LOG" ]]; then
+        echo -e "${YELLOW}[WARN]${NC} $timestamp - $msg" | tee -a "$DEPLOY_LOG"
+    else
+        echo -e "${YELLOW}[WARN]${NC} $timestamp - $msg"
+    fi
 }
 
 log_error() {
-    echo -e "${RED}[ERROR]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"
+    local msg="$1"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    if [[ -n "$DEPLOY_LOG" ]]; then
+        echo -e "${RED}[ERROR]${NC} $timestamp - $msg" | tee -a "$DEPLOY_LOG"
+    else
+        echo -e "${RED}[ERROR]${NC} $timestamp - $msg"
+    fi
 }
 
 log_step() {
-    echo -e "\n${BLUE}=== $1 ===${NC}"
+    local msg="$1"
+    echo -e "\n${BLUE}=== $msg ===${NC}"
 }
 
 log_banner() {
     echo -e "${PURPLE}"
     cat << 'EOF'
-     _            _    _             
-    | | ___ _ __ | | _(_)_ __  ___  
- _  | |/ _ \ '_ \| |/ / | '_ \/ __| 
-| |_| |  __/ | | |   <| | | | \__ \ 
- \___/ \___|_| |_|_|\_\_|_| |_|___/ 
-                                      
+  ____             ____  _             ____ _                    
+ |  _ \  _____   _/ ___|| | _____     / ___| | __ ___      ____
+ | | | |/ _ \ \ / /\___ \| |/ _ \ \   / /   | |/ _` \ \ /\ / /
+ | |_| |  __/\ V /  ___) | | (_) \ \_/ /    | | (_| |\ V  V / 
+ |____/ \___| \_/  |____/|_|\___/ \___/     |_|\__,_| \_/\_/  
+                                                                   
 EOF
     echo -e "${NC}"
-    echo -e "${CYAN}Jenkins Docker 安装脚本 v4.0.0${NC}"
-    echo -e "${CYAN}========================================${NC}"
 }
-
-# =============================================================================
-# 检查函数
-# =============================================================================
 
 check_root() {
     if [[ $EUID -ne 0 ]]; then
@@ -98,308 +95,367 @@ check_docker() {
     log_step "检查 Docker 环境"
     
     if ! command -v docker &>/dev/null; then
-        log_warn "Docker 未安装，正在安装..."
-        install_docker
-    else
-        log_info "Docker 已安装: $(docker --version)"
+        log_error "Docker 未安装"
+        log_info "请先运行: $PROJECT_DIR/deploy_docker/install_docker.sh"
+        exit 1
     fi
+    
+    log_info "Docker 已安装: $(docker --version)"
     
     if docker compose version &>/dev/null; then
         DOCKER_COMPOSE_CMD="docker compose"
-        log_info "Docker Compose (plugin) 可用"
+        log_info "Docker Compose (plugin) 已安装"
     elif command -v docker-compose &>/dev/null; then
         DOCKER_COMPOSE_CMD="docker-compose"
-        log_info "Docker Compose (standalone) 可用"
-    fi
-}
-
-install_docker() {
-    log_info "正在安装 Docker..."
-    
-    apt-get update -qq
-    apt-get install -y -qq \
-        ca-certificates \
-        curl \
-        gnupg \
-        lsb-release \
-        software-properties-common
-    
-    mkdir -p /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-    
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
-    
-    apt-get update -qq
-    apt-get install -y -qq \
-        docker-ce \
-        docker-ce-cli \
-        containerd.io \
-        docker-compose-plugin
-    
-    systemctl enable docker --now
-    
-    log_info "Docker 安装完成: $(docker --version)"
-}
-
-check_docker_compose() {
-    log_step "检查 Docker Compose 配置"
-    
-    if [[ -f "$PROJECT_ROOT/docker-compose.yml" ]]; then
-        log_info "找到项目根目录的 docker-compose.yml:"
-        log_info "推荐使用以下命令进行部署:"
-        echo
-        echo -e "${CYAN}  cd $PROJECT_ROOT${NC}"
-        echo -e "${CYAN}  $DOCKER_COMPOSE_CMD up -d jenkins${NC}"
-        echo
-        read -p "是否使用 docker-compose 方式部署? (y/n): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            log_info "使用 docker-compose 方式部署..."
-            cd "$PROJECT_ROOT"
-            $DOCKER_COMPOSE_CMD up -d jenkins
-            log_info "Jenkins 部署命令已执行"
-            log_info "请等待 Jenkins 启动（约 2-3 分钟）"
-            exit 0
-        fi
-    fi
-}
-
-# =============================================================================
-# 部署函数 (Docker run 方式)
-# =============================================================================
-
-create_directories() {
-    log_step "创建数据目录"
-    
-    mkdir -p "$JENKINS_HOME_DIR"
-    
-    log_info "Jenkins Home 目录: $JENKINS_HOME_DIR"
-}
-
-pull_image() {
-    log_step "拉取 Jenkins 镜像"
-    
-    log_info "镜像: $JENKINS_IMAGE"
-    
-    if docker pull "$JENKINS_IMAGE"; then
-        log_info "Jenkins 镜像拉取成功 ✓"
+        log_info "Docker Compose (standalone) 已安装"
     else
-        log_error "镜像拉取失败，请检查网络连接"
+        log_error "Docker Compose 未安装"
         exit 1
     fi
 }
 
-cleanup_old() {
-    log_step "清理旧容器"
+load_env() {
+    local env_file="$1"
     
-    if docker ps -a --format '{{.Names}}' | grep -q "^${JENKINS_CONTAINER_NAME}$"; then
-        log_warn "检测到已存在的容器: $JENKINS_CONTAINER_NAME"
-        read -p "是否删除旧容器? (y/n): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            docker stop "$JENKINS_CONTAINER_NAME" 2>/dev/null || true
-            docker rm "$JENKINS_CONTAINER_NAME" 2>/dev/null || true
-            log_info "旧容器已清理"
-        else
-            log_warn "保留旧容器，退出部署"
-            exit 0
-        fi
+    if [[ -f "$env_file" ]]; then
+        log_info "加载环境变量: $env_file"
+        
+        while IFS= read -r line; do
+            if [[ "$line" =~ ^[A-Z_]+= ]]; then
+                var_name="${line%%=*}"
+                var_value="${line#*=}"
+                var_value="${var_value//\"/}"
+                var_value="${var_value//\'/}"
+                export "$var_name"="$var_value"
+            fi
+        done < "$env_file"
+    else
+        log_warn "环境变量文件不存在: $env_file"
     fi
 }
 
-start_container() {
-    log_step "启动 Jenkins 容器"
+JENKINS_PORT_WEB="${JENKINS_PORT_WEB:-18081}"
+JENKINS_PORT_AGENT="${JENKINS_PORT_AGENT:-50000}"
+JENKINS_BIND="${JENKINS_BIND:-127.0.0.1}"
+JENKINS_IMAGE="${JENKINS_IMAGE:-jenkins/jenkins:lts-jdk17}"
+JENKINS_CONTAINER_NAME="${JENKINS_CONTAINER_NAME:-devopsclaw-jenkins}"
+JENKINS_DATA_DIR="${JENKINS_DATA_DIR:-$PROJECT_DIR/data/jenkins}"
+JENKINS_JAVA_OPTS="${JENKINS_JAVA_OPTS:--Dhudson.security.csrf.GlobalCrumbIssuerConfiguration.DISABLE_CSRF_PROTECTION=true -Dhudson.model.DirectoryBrowserSupport.CSP=\"\"}"
+JENKINS_OPTS="${JENKINS_OPTS:---prefix=/jenkins}"
+JENKINS_PASSWORD_FILE="/var/jenkins_home/secrets/initialAdminPassword"
+
+deploy_jenkins() {
+    log_step "部署 Jenkins 服务"
     
-    log_info "容器名: $JENKINS_CONTAINER_NAME"
-    log_info "端口映射:"
-    log_info "  Web:   $JENKINS_PORT_WEB -> 8080"
-    log_info "  Agent: $JENKINS_PORT_AGENT -> 50000"
-    log_info "路径前缀: $JENKINS_PREFIX"
-    log_info "JVM 参数: $JENKINS_JAVA_OPTS"
+    if [[ ! -d "$JENKINS_DATA_DIR" ]]; then
+        log_info "创建 Jenkins 数据目录: $JENKINS_DATA_DIR"
+        mkdir -p "$JENKINS_DATA_DIR"
+    fi
     
-    docker run --detach \
+    log_info "修改 Jenkins 数据目录权限 (UID 1000)..."
+    chown -R 1000:1000 "$JENKINS_DATA_DIR" 2>/dev/null || {
+        log_warn "权限修改失败，尝试创建修复脚本..."
+        cat > /tmp/fix_jenkins_perms.sh << 'EOFPERMS'
+#!/bin/bash
+JENKINS_DATA_DIR="$1"
+if [[ -n "$JENKINS_DATA_DIR" && -d "$JENKINS_DATA_DIR" ]]; then
+    mkdir -p "$JENKINS_DATA_DIR"
+    chown -R 1000:1000 "$JENKINS_DATA_DIR"
+    echo "权限已修复"
+fi
+EOFPERMS
+        chmod +x /tmp/fix_jenkins_perms.sh
+    }
+    
+    if docker ps -q --filter "name=$JENKINS_CONTAINER_NAME" 2>/dev/null | grep -q .; then
+        log_info "Jenkins 容器已在运行，停止并删除..."
+        docker stop "$JENKINS_CONTAINER_NAME" 2>/dev/null || true
+        docker rm "$JENKINS_CONTAINER_NAME" 2>/dev/null || true
+    elif docker ps -aq --filter "name=$JENKINS_CONTAINER_NAME" 2>/dev/null | grep -q .; then
+        log_info "删除已停止的 Jenkins 容器..."
+        docker rm "$JENKINS_CONTAINER_NAME" 2>/dev/null || true
+    fi
+    
+    log_info "创建 Jenkins 容器..."
+    echo "  - 端口: $JENKINS_BIND:$JENKINS_PORT_WEB -> 8080"
+    echo "  - 端口: $JENKINS_BIND:$JENKINS_PORT_AGENT -> 50000"
+    echo "  - 数据目录: $JENKINS_DATA_DIR"
+    echo "  - 上下文路径: $JENKINS_OPTS"
+    
+    docker run -d \
         --name "$JENKINS_CONTAINER_NAME" \
+        --network devopsclaw-network \
         --restart unless-stopped \
-        --user root \
-        --publish "127.0.0.1:${JENKINS_PORT_WEB}:8080" \
-        --publish "127.0.0.1:${JENKINS_PORT_AGENT}:50000" \
-        --volume "${JENKINS_HOME_DIR}:/var/jenkins_home" \
-        --volume "/var/run/docker.sock:/var/run/docker.sock" \
-        --env "JENKINS_OPTS=--prefix=${JENKINS_PREFIX}" \
-        --env "JAVA_OPTS=${JENKINS_JAVA_OPTS}" \
+        -p "$JENKINS_BIND:$JENKINS_PORT_WEB:8080" \
+        -p "$JENKINS_BIND:$JENKINS_PORT_AGENT:50000" \
+        -v "$JENKINS_DATA_DIR:/var/jenkins_home" \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        -e JAVA_OPTS="$JENKINS_JAVA_OPTS" \
+        -e JENKINS_OPTS="$JENKINS_OPTS" \
         "$JENKINS_IMAGE"
     
-    if [[ $? -eq 0 ]]; then
-        log_info "Jenkins 容器启动成功 ✓"
+    sleep 5
+    
+    if docker ps -q --filter "name=$JENKINS_CONTAINER_NAME" 2>/dev/null | grep -q .; then
+        log_info "✓ Jenkins 容器已启动"
+        return 0
     else
-        log_error "容器启动失败"
-        exit 1
+        log_error "Jenkins 容器启动失败"
+        log_warn "检查日志: docker logs $JENKINS_CONTAINER_NAME"
+        return 1
     fi
 }
 
-wait_for_jenkins() {
-    log_step "等待 Jenkins 启动"
+get_jenkins_password() {
+    local container_name="${1:-$JENKINS_CONTAINER_NAME}"
     
-    log_warn "Jenkins 首次启动通常需要 2-3 分钟，请耐心等待..."
+    log_step "获取 Jenkins 初始密码"
     
-    local timeout=300
-    local interval=10
-    local elapsed=0
-    
-    while [[ $elapsed -lt $timeout ]]; do
-        # 检查容器是否在运行
-        if ! docker ps --format '{{.Names}}' | grep -q "^${JENKINS_CONTAINER_NAME}$"; then
-            log_error "容器已停止运行"
-            docker logs "$JENKINS_CONTAINER_NAME" --tail 50
-            exit 1
-        fi
-        
-        # 尝试访问 Jenkins
-        if curl -s -f "http://127.0.0.1:${JENKINS_PORT_WEB}${JENKINS_PREFIX}/login" >/dev/null 2>&1; then
-            log_info "Jenkins 启动完成 ✓"
-            break
-        fi
-        
-        elapsed=$((elapsed + interval))
-        log_info "等待 Jenkins 启动... (${elapsed}s/${timeout}s)"
-        sleep $interval
-    done
-    
-    if [[ $elapsed -ge $timeout ]]; then
-        log_warn "等待超时，Jenkins 可能还在启动中"
-        log_info "请稍后检查容器状态"
+    if ! docker ps -q --filter "name=$container_name" 2>/dev/null | grep -q .; then
+        log_warn "Jenkins 容器未运行，正在启动..."
+        docker start "$container_name" 2>/dev/null
+        sleep 10
     fi
-}
-
-get_initial_password() {
-    log_step "获取初始密码"
     
-    local password_file="/var/jenkins_home/secrets/initialAdminPassword"
     local max_attempts=30
     local attempt=0
     
-    log_info "等待密码文件生成..."
-    
     while [[ $attempt -lt $max_attempts ]]; do
-        if docker exec "$JENKINS_CONTAINER_NAME" test -f "$password_file" 2>/dev/null; then
+        if docker exec "$container_name" test -f "$JENKINS_PASSWORD_FILE" 2>/dev/null; then
             local password
-            password=$(docker exec "$JENKINS_CONTAINER_NAME" cat "$password_file" 2>/dev/null)
+            password=$(docker exec "$container_name" cat "$JENKINS_PASSWORD_FILE" 2>/dev/null)
             if [[ -n "$password" ]]; then
                 echo
-                echo -e "${GREEN}Jenkins 初始管理员密码:${NC}"
-                echo -e "${YELLOW}$password${NC}"
+                echo -e "${BOLD}${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
+                echo -e "${BOLD}${GREEN}                           Jenkins 登录信息                                    ${NC}"
+                echo -e "${BOLD}${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
                 echo
-                log_info "请保存此密码，用于首次登录 Jenkins"
+                echo -e "  ${CYAN}登录地址:${NC}"
+                echo -e "    - 通过 Nginx: ${YELLOW}https://127.0.0.1:18440/jenkins/${NC}"
+                echo -e "    - 直接访问: ${YELLOW}http://127.0.0.1:$JENKINS_PORT_WEB/jenkins/${NC}"
+                echo
+                echo -e "  ${CYAN}解锁密码:${NC}   ${YELLOW}$password${NC}"
+                echo
+                echo -e "${BOLD}${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
+                echo
+                log_warn "此密码用于解锁 Jenkins 安装向导，请尽快创建管理员账户"
+                echo
+                
+                echo -e "${CYAN}【首次登录步骤】${NC}"
+                echo
+                echo -e "步骤 1：解锁 Jenkins"
+                echo -e "  1. 打开浏览器访问上面的登录地址"
+                echo -e "  2. 在 \"解锁 Jenkins\" 页面，将上面的密码粘贴到 \"管理员密码\" 输入框"
+                echo -e "  3. 点击 \"继续\""
+                echo
+                echo -e "步骤 2：安装插件"
+                echo -e "  1. 选择 \"安装推荐的插件\" 或 \"选择插件\""
+                echo -e "  2. 等待插件安装完成"
+                echo
+                echo -e "步骤 3：创建管理员账户"
+                echo -e "  1. 输入用户名 (如: admin)"
+                echo -e "  2. 输入密码"
+                echo -e "  3. 输入全名和邮箱"
+                echo -e "  4. 点击 \"保存并完成\""
+                echo
+                
+                echo -e "${CYAN}【如何修改密码】${NC}"
+                echo
+                echo -e "方法 1：登录后修改（推荐）"
+                echo -e "  1. 使用管理员账户登录 Jenkins"
+                echo -e "  2. 点击右上角用户名 → 选择 \"设置\""
+                echo -e "  3. 点击左侧菜单 \"密码\""
+                echo -e "  4. 输入当前密码，然后输入新密码并确认"
+                echo -e "  5. 点击 \"保存\""
+                echo
+                
+                echo -e "方法 2：忘记密码重置"
+                echo -e "  如果忘记密码，可以删除 Jenkins 数据目录中的密码文件："
+                echo -e "  docker exec $container_name rm -rf /var/jenkins_home/secrets/initialAdminPassword"
+                echo -e "  然后重启 Jenkins 容器，会重新生成初始密码"
+                echo
+                
+                echo -e "${CYAN}【注意事项】${NC}"
+                echo -e "  - 初始密码仅用于解锁 Jenkins"
+                echo -e "  - 首次登录后需要创建管理员账户"
+                echo -e "  - 建议使用强密码，包含大小写字母、数字和特殊字符"
+                echo
+                
                 JENKINS_INITIAL_PASSWORD="$password"
-                return
+                export JENKINS_INITIAL_PASSWORD
+                return 0
             fi
         fi
         
         attempt=$((attempt + 1))
+        log_info "等待密码文件生成... ($attempt/$max_attempts)"
         sleep 5
     done
     
-    log_warn "未能自动获取密码"
-    log_info "请稍后手动执行: docker exec $JENKINS_CONTAINER_NAME cat $password_file"
+    log_warn "未能自动获取 Jenkins 密码"
+    log_info "请手动执行: docker exec $container_name cat $JENKINS_PASSWORD_FILE"
+    return 1
 }
 
-# =============================================================================
-# 输出函数
-# =============================================================================
-
-print_summary() {
-    log_step "部署完成"
+get_jenkins_password_simple() {
+    local container_name="${1:-$JENKINS_CONTAINER_NAME}"
     
-    echo
-    echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║                    Jenkins 部署完成                            ║${NC}"
-    echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
-    echo
-    
-    echo -e "${CYAN}【访问地址】${NC}"
-    echo "  Web UI:  http://127.0.0.1:${JENKINS_PORT_WEB}${JENKINS_PREFIX}"
-    echo "  Agent:   127.0.0.1:${JENKINS_PORT_AGENT}"
-    echo
-    
-    echo -e "${CYAN}【初始密码】${NC}"
-    if [[ -n "${JENKINS_INITIAL_PASSWORD:-}" ]]; then
-        echo "  密码: 见上方输出"
-    else
-        echo "  密码: 请使用命令获取"
-        echo "  docker exec $JENKINS_CONTAINER_NAME cat /var/jenkins_home/secrets/initialAdminPassword"
+    if docker ps -q --filter "name=$container_name" 2>/dev/null | grep -q .; then
+        if docker exec "$container_name" test -f "$JENKINS_PASSWORD_FILE" 2>/dev/null; then
+            local password
+            password=$(docker exec "$container_name" cat "$JENKINS_PASSWORD_FILE" 2>/dev/null)
+            if [[ -n "$password" ]]; then
+                echo "$password"
+                return 0
+            fi
+        fi
     fi
-    echo
     
-    echo -e "${CYAN}【容器信息】${NC}"
-    echo "  容器名: $JENKINS_CONTAINER_NAME"
-    echo "  镜像: $JENKINS_IMAGE"
-    echo "  路径前缀: $JENKINS_PREFIX"
-    echo
-    
-    echo -e "${CYAN}【数据目录】${NC}"
-    echo "  Jenkins Home: $JENKINS_HOME_DIR"
-    echo
-    
-    echo -e "${CYAN}【常用命令】${NC}"
-    echo "  查看状态: docker ps | grep jenkins"
-    echo "  查看日志: docker logs -f $JENKINS_CONTAINER_NAME"
-    echo "  进入容器: docker exec -it $JENKINS_CONTAINER_NAME bash"
-    echo "  停止容器: docker stop $JENKINS_CONTAINER_NAME"
-    echo "  启动容器: docker start $JENKINS_CONTAINER_NAME"
-    echo "  重启容器: docker restart $JENKINS_CONTAINER_NAME"
-    echo
-    
-    echo -e "${CYAN}【后续操作】${NC}"
-    echo "  1. 访问 Jenkins Web UI 进行初始配置"
-    echo "  2. 安装推荐插件"
-    echo "  3. 创建管理员用户"
-    echo "  4. 生成 API Token (用户 -> 设置 -> API Token)"
-    echo "  5. 更新 .env 文件中的 JENKINS_TOKEN"
-    echo
-    
-    echo -e "${YELLOW}【重要提示】${NC}"
-    echo "  - 所有端口绑定 127.0.0.1，仅本地可访问"
-    echo "  - 如需外部访问，请配置 Nginx 反向代理"
-    echo "  - 首次启动可能需要 2-3 分钟"
-    echo "  - 初始密码仅显示一次，请妥善保存"
-    echo
-    
-    echo -e "${GREEN}════════════════════════════════════════════════════════════════${NC}"
+    log_warn "无法获取 Jenkins 密码"
+    return 1
 }
 
-# =============================================================================
-# 主函数
-# =============================================================================
+print_jenkins_summary() {
+    local mode="${1:-standalone}"
+    
+    echo
+    echo -e "${BOLD}${GREEN}┌─────────────────────────────────────────────────────────────────┐${NC}"
+    echo -e "${BOLD}${GREEN}│                      Jenkins 服务状态                            │${NC}"
+    echo -e "${BOLD}${GREEN}└─────────────────────────────────────────────────────────────────┘${NC}"
+    echo
+    
+    if docker ps -q --filter "name=$JENKINS_CONTAINER_NAME" 2>/dev/null | grep -q .; then
+        log_info "容器: $JENKINS_CONTAINER_NAME - 运行中 ✓"
+    else
+        log_warn "容器: $JENKINS_CONTAINER_NAME - 未运行"
+    fi
+    
+    if [[ "$mode" == "without_nginx" ]]; then
+        echo
+        echo -e "${BOLD}Jenkins 访问地址:${NC}"
+        echo -e "  - 本地访问: ${CYAN}http://127.0.0.1:$JENKINS_PORT_WEB/jenkins/${NC}"
+        echo -e "  - 网络访问: ${YELLOW}http://<主机IP>:$JENKINS_PORT_WEB/jenkins/${NC}"
+    elif [[ "$mode" == "with_nginx" ]]; then
+        echo
+        echo -e "${BOLD}Jenkins 访问地址:${NC}"
+        echo -e "  - Nginx (推荐): ${CYAN}http://127.0.0.1:18440/jenkins/${NC}"
+        echo -e "  - 直连: http://127.0.0.1:$JENKINS_PORT_WEB/jenkins/"
+    fi
+    
+    echo
+}
+
+show_help() {
+    echo
+    echo -e "${BOLD}DevOpsClaw Jenkins 部署脚本${NC}"
+    echo
+    echo -e "用法: $0 [选项]"
+    echo
+    echo -e "选项:"
+    echo -e "  ${CYAN}-h, --help${NC}              显示此帮助信息"
+    echo -e "  ${CYAN}--deploy${NC}                部署 Jenkins 服务 (默认)"
+    echo -e "  ${CYAN}--get-password${NC}          获取 Jenkins 初始密码"
+    echo -e "  ${CYAN}--status${NC}                查看 Jenkins 服务状态"
+    echo -e "  ${CYAN}--stop${NC}                  停止 Jenkins 服务"
+    echo -e "  ${CYAN}--start${NC}                 启动 Jenkins 服务"
+    echo -e "  ${CYAN}--restart${NC}               重启 Jenkins 服务"
+    echo
+    echo -e "环境变量:"
+    echo -e "  JENKINS_PORT_WEB=${JENKINS_PORT_WEB}     Jenkins Web 端口"
+    echo -e "  JENKINS_PORT_AGENT=${JENKINS_PORT_AGENT}   Jenkins Agent 端口"
+    echo -e "  JENKINS_BIND=${JENKINS_BIND}         Jenkins 绑定地址"
+    echo -e "  JENKINS_CONTAINER_NAME=${JENKINS_CONTAINER_NAME}"
+    echo
+    echo -e "示例:"
+    echo -e "  $0                              部署 Jenkins"
+    echo -e "  $0 --get-password               获取密码"
+    echo -e "  $0 --status                     查看状态"
+    echo
+}
 
 main() {
+    local action="deploy"
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            --deploy)
+                action="deploy"
+                shift
+                ;;
+            --get-password)
+                action="get_password"
+                shift
+                ;;
+            --status)
+                action="status"
+                shift
+                ;;
+            --stop)
+                action="stop"
+                shift
+                ;;
+            --start)
+                action="start"
+                shift
+                ;;
+            --restart)
+                action="restart"
+                shift
+                ;;
+            *)
+                log_warn "未知参数: $1"
+                show_help
+                exit 1
+                ;;
+        esac
+    done
+    
     log_banner
     
-    # 检查
-    check_root
-    check_docker
-    
-    # 检查是否使用 docker-compose
-    check_docker_compose
-    
-    # 部署
-    create_directories
-    pull_image
-    cleanup_old
-    start_container
-    wait_for_jenkins
-    get_initial_password
-    
-    # 输出
-    print_summary
-    
-    log_info "Jenkins 部署完成!"
+    case "$action" in
+        deploy)
+            check_root
+            check_docker
+            if [[ -f "$PROJECT_DIR/.env" ]]; then
+                load_env "$PROJECT_DIR/.env"
+            fi
+            deploy_jenkins
+            print_jenkins_summary "without_nginx"
+            log_info "Jenkins 部署完成!"
+            ;;
+        get_password)
+            check_root
+            check_docker
+            get_jenkins_password
+            ;;
+        status)
+            print_jenkins_summary "standalone"
+            ;;
+        stop)
+            check_root
+            log_step "停止 Jenkins 服务"
+            docker stop "$JENKINS_CONTAINER_NAME" 2>/dev/null || true
+            log_info "Jenkins 已停止"
+            ;;
+        start)
+            check_root
+            log_step "启动 Jenkins 服务"
+            docker start "$JENKINS_CONTAINER_NAME" 2>/dev/null
+            log_info "Jenkins 已启动"
+            ;;
+        restart)
+            check_root
+            log_step "重启 Jenkins 服务"
+            docker restart "$JENKINS_CONTAINER_NAME" 2>/dev/null
+            log_info "Jenkins 已重启"
+            ;;
+    esac
 }
 
-# =============================================================================
-# 信号处理
-# =============================================================================
-
-trap 'log_warn "脚本被用户中断"; exit 1' INT TERM
-
-# 执行主函数
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi

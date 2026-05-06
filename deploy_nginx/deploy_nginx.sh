@@ -1,49 +1,35 @@
 #!/bin/bash
 # =============================================================================
-# Nginx 反向代理部署脚本 v4.1.0
+# DevOpsClaw Nginx 部署脚本
 # =============================================================================
-# 用于部署 Nginx 作为 DevOpsClaw CI 平台的统一反向代理入口
+# 功能：
+#   - 部署 Nginx 反向代理服务
+#   - 配置 SSL 证书
+#   - 配置各服务的反向代理
 #
-# 功能:
-#   - SSL 终结（统一 HTTPS 证书管理）
-#   - 反向代理（按端口转发到后端服务）
-#   - 统一访问日志
-#   - 安全隔离（后端服务不直接暴露端口）
+# 使用方法：
+#   - 独立运行: sudo ./deploy_nginx/deploy_nginx.sh
+#   - 被主脚本调用: source deploy_nginx/deploy_nginx.sh
 #
-# 使用方法:
-#   chmod +x deploy_nginx.sh
-#   sudo ./deploy_nginx.sh
+# 端口配置 (新规划):
+#   - 注意: 使用 18440-18449 范围，避免与 GitLab 内置 HTTPS 端口 8443 冲突！
+#   - Nginx Jenkins: 18440
+#   - Nginx GitLab: 18441
+#   - Nginx OpenClaw: 18442
+#   - Nginx Registry: 18444
+#   - Nginx Harbor: 18445
+#   - Nginx SonarQube: 18446
 #
 # =============================================================================
 
-set -euo pipefail
+set -e
 
-# =============================================================================
-# 配置变量
-# =============================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-ENV_FILE="$PROJECT_ROOT/.env"
-NGINX_CONFIG_DIR="$SCRIPT_DIR/nginx"
-SSL_DIR="$NGINX_CONFIG_DIR/ssl"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+LIB_DIR="$PROJECT_DIR/lib"
+DEPLOY_LOG="${PROJECT_DIR}/deploy.log"
+DOCKER_COMPOSE_CMD=""
 
-# Nginx 配置（从环境变量读取，或使用默认值）
-NGINX_CONTAINER_NAME=${NGINX_CONTAINER_NAME:-devopsclaw-nginx}
-NGINX_IMAGE=${NGINX_IMAGE:-nginx:alpine}
-NGINX_NETWORK=${NGINX_NETWORK:-devopsclaw-network}
-
-# Nginx 端口配置
-NGINX_PORT_GITLAB=${NGINX_PORT_GITLAB:-8929}
-NGINX_PORT_JENKINS=${NGINX_PORT_JENKINS:-8080}
-NGINX_PORT_OPENCLAW=${NGINX_PORT_OPENCLAW:-18789}
-NGINX_PORT_HARBOR=${NGINX_PORT_HARBOR:-8443}
-NGINX_PORT_ARTIFACTORY=${NGINX_PORT_ARTIFACTORY:-8081}
-NGINX_PORT_TRM=${NGINX_PORT_TRM:-8085}
-NGINX_PORT_RABBITMQ=${NGINX_PORT_RABBITMQ:-15672}
-
-# =============================================================================
-# 颜色定义
-# =============================================================================
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -53,44 +39,53 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-# =============================================================================
-# 日志函数
-# =============================================================================
 log_info() {
-    echo -e "${GREEN}[INFO]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"
+    local msg="$1"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    if [[ -n "$DEPLOY_LOG" ]]; then
+        echo -e "${GREEN}[INFO]${NC} $timestamp - $msg" | tee -a "$DEPLOY_LOG"
+    else
+        echo -e "${GREEN}[INFO]${NC} $timestamp - $msg"
+    fi
 }
 
 log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"
+    local msg="$1"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    if [[ -n "$DEPLOY_LOG" ]]; then
+        echo -e "${YELLOW}[WARN]${NC} $timestamp - $msg" | tee -a "$DEPLOY_LOG"
+    else
+        echo -e "${YELLOW}[WARN]${NC} $timestamp - $msg"
+    fi
 }
 
 log_error() {
-    echo -e "${RED}[ERROR]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $1"
+    local msg="$1"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    if [[ -n "$DEPLOY_LOG" ]]; then
+        echo -e "${RED}[ERROR]${NC} $timestamp - $msg" | tee -a "$DEPLOY_LOG"
+    else
+        echo -e "${RED}[ERROR]${NC} $timestamp - $msg"
+    fi
 }
 
 log_step() {
-    echo -e "\n${BLUE}=== $1 ===${NC}"
+    local msg="$1"
+    echo -e "\n${BLUE}=== $msg ===${NC}"
 }
 
 log_banner() {
     echo -e "${PURPLE}"
     cat << 'EOF'
-   _   _  ______ _   _     _____          
-  | \ | |/ ____| \ | |   |  __ \         
-  |  \| | |  __|  \| |   | |__) | __ ___ 
-  | . ` | | |_ | . ` |   |  _  / '__/ _ \
-  | |\  | |__| | |\  |   | | \ \ | | (_) |
-  |_| \_|\_____|_| \_|   |_|  \_\_|  \___/
-                                            
+  ____             ____  _             ____ _                    
+ |  _ \  _____   _/ ___|| | _____     / ___| | __ ___      ____
+ | | | |/ _ \ \ / /\___ \| |/ _ \ \   / /   | |/ _` \ \ /\ / /
+ | |_| |  __/\ V /  ___) | | (_) \ \_/ /    | | (_| |\ V  V / 
+ |____/ \___| \_/  |____/|_|\___/ \___/     |_|\__,_| \_/\_/  
+                                                                   
 EOF
     echo -e "${NC}"
-    echo -e "${CYAN}Nginx 反向代理部署脚本 v4.1.0${NC}"
-    echo -e "${CYAN}========================================${NC}"
 }
-
-# =============================================================================
-# 检查函数
-# =============================================================================
 
 check_root() {
     if [[ $EUID -ne 0 ]]; then
@@ -104,18 +99,30 @@ check_docker() {
     log_step "检查 Docker 环境"
     
     if ! command -v docker &>/dev/null; then
-        log_error "Docker 未安装，请先安装 Docker"
+        log_error "Docker 未安装"
+        log_info "请先运行: $PROJECT_DIR/deploy_docker/install_docker.sh"
         exit 1
     fi
     
     log_info "Docker 已安装: $(docker --version)"
+    
+    if docker compose version &>/dev/null; then
+        DOCKER_COMPOSE_CMD="docker compose"
+        log_info "Docker Compose (plugin) 已安装"
+    elif command -v docker-compose &>/dev/null; then
+        DOCKER_COMPOSE_CMD="docker-compose"
+        log_info "Docker Compose (standalone) 已安装"
+    else
+        log_error "Docker Compose 未安装"
+        exit 1
+    fi
 }
 
 load_env() {
-    log_step "加载环境变量"
+    local env_file="$1"
     
-    if [[ -f "$ENV_FILE" ]]; then
-        log_info "加载环境变量文件: $ENV_FILE"
+    if [[ -f "$env_file" ]]; then
+        log_info "加载环境变量: $env_file"
         
         while IFS= read -r line; do
             if [[ "$line" =~ ^[A-Z_]+= ]]; then
@@ -125,314 +132,343 @@ load_env() {
                 var_value="${var_value//\'/}"
                 export "$var_name"="$var_value"
             fi
-        done < "$ENV_FILE"
+        done < "$env_file"
     else
-        log_warn "环境变量文件不存在: $ENV_FILE"
-        log_info "使用默认配置"
+        log_warn "环境变量文件不存在: $env_file"
     fi
 }
 
-check_ssl_certificates() {
-    log_step "检查 SSL 证书"
+NGINX_PORT_JENKINS="${NGINX_PORT_JENKINS:-18440}"
+NGINX_PORT_GITLAB="${NGINX_PORT_GITLAB:-18441}"
+NGINX_PORT_OPENCLAW="${NGINX_PORT_OPENCLAW:-18442}"
+NGINX_PORT_REGISTRY="${NGINX_PORT_REGISTRY:-18444}"
+NGINX_PORT_HARBOR="${NGINX_PORT_HARBOR:-18445}"
+NGINX_PORT_SONARQUBE="${NGINX_PORT_SONARQUBE:-18446}"
+NGINX_BIND="${NGINX_BIND:-127.0.0.1}"
+NGINX_IMAGE="${NGINX_IMAGE:-nginx:alpine}"
+NGINX_CONTAINER_NAME="${NGINX_CONTAINER_NAME:-devopsclaw-nginx}"
+NGINX_CONF_DIR="${NGINX_CONF_DIR:-$SCRIPT_DIR/nginx}"
+NGINX_SSL_DIR="${NGINX_SSL_DIR:-$SCRIPT_DIR/nginx/ssl}"
+
+check_nginx_ssl_certificates() {
+    log_step "检查 Nginx SSL 证书"
     
-    local cert_file="$SSL_DIR/devopsclaw.crt"
-    local key_file="$SSL_DIR/devopsclaw.key"
+    local cert_files=(
+        "jenkins.crt"
+        "gitlab.crt"
+        "openclaw.crt"
+        "registry.crt"
+        "harbor.crt"
+        "sonarqube.crt"
+    )
     
-    if [[ -f "$cert_file" && -f "$key_file" ]]; then
-        log_info "SSL 证书已存在"
-        openssl x509 -in "$cert_file" -noout -subject -dates
+    local all_valid=true
+    
+    for cert in "${cert_files[@]}"; do
+        local cert_path="$NGINX_SSL_DIR/$cert"
+        local key_path="${cert_path%.crt}.key"
+        
+        if [[ -f "$cert_path" && -f "$key_path" ]]; then
+            log_info "✓ SSL 证书已存在: $cert"
+        else
+            log_warn "✗ SSL 证书不存在: $cert"
+            all_valid=false
+        fi
+    done
+    
+    if [[ "$all_valid" == false ]]; then
+        log_warn "部分 SSL 证书不存在，将生成自签名证书"
+    fi
+    
+    echo
+}
+
+generate_nginx_ssl_certificates() {
+    log_step "生成 Nginx SSL 自签名证书"
+    
+    if [[ ! -d "$NGINX_SSL_DIR" ]]; then
+        log_info "创建 SSL 目录: $NGINX_SSL_DIR"
+        mkdir -p "$NGINX_SSL_DIR"
+    fi
+    
+    local domains=(
+        "jenkins"
+        "gitlab"
+        "openclaw"
+        "registry"
+        "harbor"
+        "sonarqube"
+    )
+    
+    local country="CN"
+    local state="Beijing"
+    local locality="Beijing"
+    local organization="DevOpsClaw"
+    local organizational_unit="DevOps"
+    
+    for domain in "${domains[@]}"; do
+        local cert_path="$NGINX_SSL_DIR/$domain.crt"
+        local key_path="$NGINX_SSL_DIR/$domain.key"
+        
+        if [[ -f "$cert_path" && -f "$key_path" ]]; then
+            log_info "跳过已存在的证书: $domain"
+            continue
+        fi
+        
+        log_info "生成自签名证书: $domain"
+        
+        openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+            -keyout "$key_path" \
+            -out "$cert_path" \
+            -subj "/C=$country/ST=$state/L=$locality/O=$organization/OU=$organizational_unit/CN=$domain.local"
+        
+        if [[ -f "$cert_path" && -f "$key_path" ]]; then
+            log_info "✓ 证书生成成功: $domain"
+        else
+            log_error "✗ 证书生成失败: $domain"
+        fi
+    done
+    
+    echo
+    log_info "SSL 证书生成完成"
+    log_info "证书目录: $NGINX_SSL_DIR"
+    echo
+}
+
+deploy_nginx() {
+    log_step "部署 Nginx 反向代理服务"
+    
+    if [[ ! -d "$NGINX_CONF_DIR/conf.d" ]]; then
+        log_error "Nginx 配置目录不存在: $NGINX_CONF_DIR/conf.d"
+        log_info "请确保 Nginx 配置文件已存在"
+        return 1
+    fi
+    
+    check_nginx_ssl_certificates
+    generate_nginx_ssl_certificates
+    
+    if docker ps -q --filter "name=$NGINX_CONTAINER_NAME" 2>/dev/null | grep -q .; then
+        log_info "Nginx 容器已在运行，停止并删除..."
+        docker stop "$NGINX_CONTAINER_NAME" 2>/dev/null || true
+        docker rm "$NGINX_CONTAINER_NAME" 2>/dev/null || true
+    elif docker ps -aq --filter "name=$NGINX_CONTAINER_NAME" 2>/dev/null | grep -q .; then
+        log_info "删除已停止的 Nginx 容器..."
+        docker rm "$NGINX_CONTAINER_NAME" 2>/dev/null || true
+    fi
+    
+    log_info "创建 Nginx 容器..."
+    echo "  - 端口 Jenkins: $NGINX_BIND:$NGINX_PORT_JENKINS -> 8440"
+    echo "  - 端口 GitLab: $NGINX_BIND:$NGINX_PORT_GITLAB -> 8441"
+    echo "  - 端口 OpenClaw: $NGINX_BIND:$NGINX_PORT_OPENCLAW -> 8442"
+    echo "  - 端口 Registry: $NGINX_BIND:$NGINX_PORT_REGISTRY -> 8444"
+    echo "  - 端口 Harbor: $NGINX_BIND:$NGINX_PORT_HARBOR -> 8445"
+    echo "  - 端口 SonarQube: $NGINX_BIND:$NGINX_PORT_SONARQUBE -> 8446"
+    echo "  - 配置目录: $NGINX_CONF_DIR"
+    
+    docker run -d \
+        --name "$NGINX_CONTAINER_NAME" \
+        --network devopsclaw-network \
+        --restart unless-stopped \
+        -p "$NGINX_BIND:$NGINX_PORT_JENKINS:8440" \
+        -p "$NGINX_BIND:$NGINX_PORT_GITLAB:8441" \
+        -p "$NGINX_BIND:$NGINX_PORT_OPENCLAW:8442" \
+        -p "$NGINX_BIND:$NGINX_PORT_REGISTRY:8444" \
+        -p "$NGINX_BIND:$NGINX_PORT_HARBOR:8445" \
+        -p "$NGINX_BIND:$NGINX_PORT_SONARQUBE:8446" \
+        -v "$NGINX_CONF_DIR/nginx.conf:/etc/nginx/nginx.conf:ro" \
+        -v "$NGINX_CONF_DIR/conf.d:/etc/nginx/conf.d:ro" \
+        -v "$NGINX_SSL_DIR:/etc/nginx/ssl:ro" \
+        "$NGINX_IMAGE"
+    
+    sleep 3
+    
+    if docker ps -q --filter "name=$NGINX_CONTAINER_NAME" 2>/dev/null | grep -q .; then
+        log_info "✓ Nginx 容器已启动"
+        log_info "测试 Nginx 配置..."
+        if docker exec "$NGINX_CONTAINER_NAME" nginx -t; then
+            log_info "✓ Nginx 配置语法正确"
+        else
+            log_warn "Nginx 配置有问题，请检查日志"
+        fi
         return 0
     else
-        log_warn "SSL 证书不存在"
+        log_error "Nginx 容器启动失败"
+        log_warn "检查日志: docker logs $NGINX_CONTAINER_NAME"
         return 1
     fi
 }
 
-generate_ssl_certificates() {
-    log_step "生成 SSL 证书"
+print_nginx_summary() {
+    echo
+    echo -e "${BOLD}${GREEN}┌─────────────────────────────────────────────────────────────────┐${NC}"
+    echo -e "${BOLD}${GREEN}│                      Nginx 服务状态                              │${NC}"
+    echo -e "${BOLD}${GREEN}└─────────────────────────────────────────────────────────────────┘${NC}"
+    echo
     
-    local generate_script="$SCRIPT_DIR/generate_certs.sh"
-    
-    if [[ -f "$generate_script" ]]; then
-        log_info "运行证书生成脚本: $generate_script"
-        chmod +x "$generate_script"
-        "$generate_script"
+    if docker ps -q --filter "name=$NGINX_CONTAINER_NAME" 2>/dev/null | grep -q .; then
+        log_info "容器: $NGINX_CONTAINER_NAME - 运行中 ✓"
     else
-        log_error "证书生成脚本不存在: $generate_script"
-        exit 1
+        log_warn "容器: $NGINX_CONTAINER_NAME - 未运行"
     fi
-}
-
-check_docker_network() {
-    log_step "检查 Docker 网络"
-    
-    if docker network inspect "$NGINX_NETWORK" &>/dev/null; then
-        log_info "Docker 网络已存在: $NGINX_NETWORK"
-    else
-        log_warn "Docker 网络不存在，将由 docker-compose 创建"
-    fi
-}
-
-check_backend_services() {
-    log_step "检查后端服务"
-    
-    local services=("jenkins" "gitlab" "openclaw")
-    local all_running=true
-    
-    for service in "${services[@]}"; do
-        if docker ps --format '{{.Names}}' | grep -q "${service}"; then
-            log_info "✓ $service 服务正在运行"
-        else
-            log_warn "✗ $service 服务未运行"
-            all_running=false
-        fi
-    done
-    
-    if [[ "$all_running" == false ]]; then
-        echo
-        read -p "后端服务未全部运行，是否继续部署 Nginx? (y/n): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            log_info "用户取消部署"
-            exit 0
-        fi
-    fi
-}
-
-# =============================================================================
-# 部署函数
-# =============================================================================
-
-check_docker_compose() {
-    log_step "检查 Docker Compose 配置"
-    
-    if [[ -f "$PROJECT_ROOT/docker-compose.yml" ]]; then
-        log_info "找到项目根目录的 docker-compose.yml"
-        log_info "推荐使用以下命令部署 Nginx:"
-        echo
-        echo -e "${CYAN}  cd $PROJECT_ROOT${NC}"
-        echo -e "${CYAN}  docker compose up -d nginx${NC}"
-        echo
-        read -p "是否使用 docker-compose 方式部署? (y/n): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            log_info "使用 docker-compose 方式部署..."
-            cd "$PROJECT_ROOT"
-            docker compose up -d nginx
-            log_info "Nginx 部署命令已执行"
-            print_summary
-            exit 0
-        fi
-    fi
-}
-
-pull_nginx_image() {
-    log_step "拉取 Nginx 镜像"
-    
-    log_info "镜像: $NGINX_IMAGE"
-    
-    if docker pull "$NGINX_IMAGE"; then
-        log_info "Nginx 镜像拉取成功 ✓"
-    else
-        log_error "镜像拉取失败"
-        exit 1
-    fi
-}
-
-cleanup_old_container() {
-    log_step "清理旧容器"
-    
-    if docker ps -a --format '{{.Names}}' | grep -q "^${NGINX_CONTAINER_NAME}$"; then
-        log_warn "检测到已存在的 Nginx 容器"
-        read -p "是否删除旧容器? (y/n): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            docker stop "$NGINX_CONTAINER_NAME" 2>/dev/null || true
-            docker rm "$NGINX_CONTAINER_NAME" 2>/dev/null || true
-            log_info "旧容器已清理"
-        else
-            log_warn "保留旧容器，退出部署"
-            exit 0
-        fi
-    fi
-}
-
-start_nginx_container() {
-    log_step "启动 Nginx 容器"
-    
-    log_info "容器名: $NGINX_CONTAINER_NAME"
-    log_info "网络: $NGINX_NETWORK"
-    log_info "端口映射:"
-    log_info "  443 (默认 HTTPS)"
-    log_info "  $NGINX_PORT_GITLAB (GitLab)"
-    log_info "  $NGINX_PORT_JENKINS (Jenkins)"
-    log_info "  $NGINX_PORT_OPENCLAW (OpenClaw)"
-    log_info "  $NGINX_PORT_HARBOR (Harbor)"
-    log_info "  $NGINX_PORT_ARTIFACTORY (Artifactory)"
-    log_info "  $NGINX_PORT_TRM (TRM)"
-    log_info "  $NGINX_PORT_RABBITMQ (RabbitMQ 管理)"
-    
-    docker run --detach \
-        --name "$NGINX_CONTAINER_NAME" \
-        --restart always \
-        --network "$NGINX_NETWORK" \
-        --publish "0.0.0.0:443:443" \
-        --publish "0.0.0.0:${NGINX_PORT_GITLAB}:8929" \
-        --publish "0.0.0.0:${NGINX_PORT_JENKINS}:8080" \
-        --publish "0.0.0.0:${NGINX_PORT_OPENCLAW}:18789" \
-        --publish "0.0.0.0:${NGINX_PORT_HARBOR}:8443" \
-        --publish "0.0.0.0:${NGINX_PORT_ARTIFACTORY}:8081" \
-        --publish "0.0.0.0:${NGINX_PORT_TRM}:8085" \
-        --publish "0.0.0.0:${NGINX_PORT_RABBITMQ}:15672" \
-        --volume "${NGINX_CONFIG_DIR}/nginx.conf:/etc/nginx/nginx.conf:ro" \
-        --volume "${NGINX_CONFIG_DIR}/conf.d:/etc/nginx/conf.d:ro" \
-        --volume "${SSL_DIR}:/etc/nginx/ssl:ro" \
-        --volume "devopsclaw_nginx-logs:/var/log/nginx" \
-        "$NGINX_IMAGE"
-    
-    if [[ $? -eq 0 ]]; then
-        log_info "Nginx 容器启动成功 ✓"
-    else
-        log_error "容器启动失败"
-        exit 1
-    fi
-}
-
-wait_for_nginx() {
-    log_step "等待 Nginx 启动"
-    
-    local timeout=30
-    local interval=2
-    local elapsed=0
-    
-    while [[ $elapsed -lt $timeout ]]; do
-        # 检查 nginx 配置语法
-        if docker exec "$NGINX_CONTAINER_NAME" nginx -t &>/dev/null; then
-            log_info "Nginx 配置语法正确 ✓"
-            break
-        fi
-        
-        # 检查容器是否在运行
-        if ! docker ps --format '{{.Names}}' | grep -q "^${NGINX_CONTAINER_NAME}$"; then
-            log_error "容器已停止运行"
-            docker logs "$NGINX_CONTAINER_NAME" --tail 50
-            exit 1
-        fi
-        
-        elapsed=$((elapsed + interval))
-        log_info "等待 Nginx 启动... (${elapsed}s/${timeout}s)"
-        sleep $interval
-    done
-    
-    if [[ $elapsed -ge $timeout ]]; then
-        log_warn "等待超时"
-        log_info "请检查容器日志: docker logs $NGINX_CONTAINER_NAME"
-    fi
-}
-
-# =============================================================================
-# 输出函数
-# =============================================================================
-
-print_summary() {
-    log_step "部署完成"
     
     echo
-    echo -e "${GREEN}╔════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║                    Nginx 反向代理部署完成                        ║${NC}"
-    echo -e "${GREEN}╚════════════════════════════════════════════════════════════════╝${NC}"
-    echo
+    echo -e "${BOLD}Nginx 反向代理访问地址 (HTTPS):${NC}"
+    echo -e "  - Jenkins: ${CYAN}https://127.0.0.1:$NGINX_PORT_JENKINS/jenkins/${NC}"
+    echo -e "  - GitLab: ${CYAN}https://127.0.0.1:$NGINX_PORT_GITLAB${NC}"
+    echo -e "  - OpenClaw: ${CYAN}https://127.0.0.1:$NGINX_PORT_OPENCLAW${NC}"
+    if [[ "$NGINX_PORT_REGISTRY" != "" ]]; then
+        echo -e "  - Registry: ${CYAN}https://127.0.0.1:$NGINX_PORT_REGISTRY${NC}"
+        echo -e "    注意: Registry 服务需要单独部署才能访问${NC}"
+    fi
+    if [[ "$NGINX_PORT_HARBOR" != "" ]]; then
+        echo -e "  - Harbor: ${CYAN}https://127.0.0.1:$NGINX_PORT_HARBOR${NC}"
+        echo -e "    注意: Harbor 服务需要单独部署才能访问${NC}"
+    fi
+    if [[ "$NGINX_PORT_SONARQUBE" != "" ]]; then
+        echo -e "  - SonarQube: ${CYAN}https://127.0.0.1:$NGINX_PORT_SONARQUBE${NC}"
+        echo -e "    注意: SonarQube 服务需要单独部署才能访问${NC}"
+    fi
     
-    echo -e "${CYAN}【访问地址（HTTPS）】${NC}"
-    echo "  默认:    https://<your-ip>:443"
-    echo "  GitLab:  https://<your-ip>:${NGINX_PORT_GITLAB}"
-    echo "  Jenkins: https://<your-ip>:${NGINX_PORT_JENKINS}"
-    echo "  OpenClaw: https://<your-ip>:${NGINX_PORT_OPENCLAW}"
-    echo "  Harbor:  https://<your-ip>:${NGINX_PORT_HARBOR} (可选)"
-    echo "  Artifactory: https://<your-ip>:${NGINX_PORT_ARTIFACTORY} (可选)"
-    echo "  TRM:     https://<your-ip>:${NGINX_PORT_TRM} (可选)"
-    echo "  RabbitMQ: https://<your-ip>:${NGINX_PORT_RABBITMQ} (可选)"
     echo
-    
-    echo -e "${CYAN}【TCP 直连端口】${NC}"
-    echo "  GitLab SSH:      2222"
-    echo "  Jenkins Agent:   50000"
+    log_info "配置目录: $NGINX_CONF_DIR"
+    log_info "SSL 证书目录: $NGINX_SSL_DIR"
     echo
-    
-    echo -e "${CYAN}【容器信息】${NC}"
-    echo "  容器名: $NGINX_CONTAINER_NAME"
-    echo "  镜像: $NGINX_IMAGE"
-    echo "  网络: $NGINX_NETWORK"
-    echo
-    
-    echo -e "${CYAN}【常用命令】${NC}"
-    echo "  查看状态:   docker ps | grep nginx"
-    echo "  查看日志:   docker logs -f $NGINX_CONTAINER_NAME"
-    echo "  访问日志:   docker exec $NGINX_CONTAINER_NAME cat /var/log/nginx/access.log"
-    echo "  错误日志:   docker exec $NGINX_CONTAINER_NAME cat /var/log/nginx/error.log"
-    echo "  重载配置:   docker exec $NGINX_CONTAINER_NAME nginx -s reload"
-    echo "  重启容器:   docker restart $NGINX_CONTAINER_NAME"
-    echo
-    
-    echo -e "${YELLOW}【重要提示】${NC}"
-    echo "  1. 使用自签名证书，浏览器访问时会有安全警告"
-    echo "  2. 点击 '高级' -> '继续前往' 即可访问"
-    echo "  3. 生产环境请使用可信 CA 签发的证书"
-    echo "  4. 后端服务端口不再直接暴露，统一通过 Nginx 访问"
-    echo "  5. 所有 Web 请求统一记录在 /var/log/nginx/access.log"
-    echo
-    
-    echo -e "${GREEN}════════════════════════════════════════════════════════════════${NC}"
 }
 
-# =============================================================================
-# 主函数
-# =============================================================================
+show_help() {
+    echo
+    echo -e "${BOLD}DevOpsClaw Nginx 部署脚本${NC}"
+    echo
+    echo -e "用法: $0 [选项]"
+    echo
+    echo -e "选项:"
+    echo -e "  ${CYAN}-h, --help${NC}              显示此帮助信息"
+    echo -e "  ${CYAN}--deploy${NC}                部署 Nginx 服务 (默认)"
+    echo -e "  ${CYAN}--generate-ssl${NC}          生成 SSL 自签名证书"
+    echo -e "  ${CYAN}--check-ssl${NC}             检查 SSL 证书"
+    echo -e "  ${CYAN}--status${NC}                查看服务状态"
+    echo -e "  ${CYAN}--stop${NC}                  停止服务"
+    echo -e "  ${CYAN}--start${NC}                 启动服务"
+    echo -e "  ${CYAN}--restart${NC}               重启服务"
+    echo -e "  ${CYAN}--reload${NC}                重载 Nginx 配置"
+    echo
+    echo -e "环境变量:"
+    echo -e "  NGINX_PORT_JENKINS=${NGINX_PORT_JENKINS}     Nginx Jenkins 端口"
+    echo -e "  NGINX_PORT_GITLAB=${NGINX_PORT_GITLAB}       Nginx GitLab 端口"
+    echo -e "  NGINX_PORT_OPENCLAW=${NGINX_PORT_OPENCLAW}   Nginx OpenClaw 端口"
+    echo -e "  NGINX_CONTAINER_NAME=${NGINX_CONTAINER_NAME}"
+    echo
+    echo -e "示例:"
+    echo -e "  $0                              部署 Nginx"
+    echo -e "  $0 --generate-ssl               生成 SSL 证书"
+    echo -e "  $0 --check-ssl                  检查 SSL 证书"
+    echo -e "  $0 --reload                     重载配置"
+    echo
+}
 
 main() {
+    local action="deploy"
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            --deploy)
+                action="deploy"
+                shift
+                ;;
+            --generate-ssl)
+                action="generate_ssl"
+                shift
+                ;;
+            --check-ssl)
+                action="check_ssl"
+                shift
+                ;;
+            --status)
+                action="status"
+                shift
+                ;;
+            --stop)
+                action="stop"
+                shift
+                ;;
+            --start)
+                action="start"
+                shift
+                ;;
+            --restart)
+                action="restart"
+                shift
+                ;;
+            --reload)
+                action="reload"
+                shift
+                ;;
+            *)
+                log_warn "未知参数: $1"
+                show_help
+                exit 1
+                ;;
+        esac
+    done
+    
     log_banner
     
-    # 检查
-    check_root
-    check_docker
-    load_env
-    
-    # 检查 SSL 证书
-    if ! check_ssl_certificates; then
-        read -p "是否生成自签名证书? (y/n): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            generate_ssl_certificates
-        else
-            log_error "SSL 证书是必需的，无法继续部署"
-            exit 1
-        fi
-    fi
-    
-    # 检查 Docker Compose
-    check_docker_compose
-    
-    # 检查后端服务
-    check_backend_services
-    check_docker_network
-    
-    # 部署
-    pull_nginx_image
-    cleanup_old_container
-    start_nginx_container
-    wait_for_nginx
-    
-    # 输出
-    print_summary
-    
-    log_info "Nginx 反向代理部署完成!"
+    case "$action" in
+        deploy)
+            check_root
+            check_docker
+            if [[ -f "$PROJECT_DIR/.env" ]]; then
+                load_env "$PROJECT_DIR/.env"
+            fi
+            deploy_nginx
+            print_nginx_summary
+            log_info "Nginx 部署完成!"
+            ;;
+        generate_ssl)
+            generate_nginx_ssl_certificates
+            log_info "SSL 证书生成完成!"
+            ;;
+        check_ssl)
+            check_nginx_ssl_certificates
+            ;;
+        status)
+            print_nginx_summary
+            ;;
+        stop)
+            check_root
+            log_step "停止 Nginx 服务"
+            docker stop "$NGINX_CONTAINER_NAME" 2>/dev/null || true
+            log_info "Nginx 已停止"
+            ;;
+        start)
+            check_root
+            log_step "启动 Nginx 服务"
+            docker start "$NGINX_CONTAINER_NAME" 2>/dev/null
+            log_info "Nginx 已启动"
+            ;;
+        restart)
+            check_root
+            log_step "重启 Nginx 服务"
+            docker restart "$NGINX_CONTAINER_NAME" 2>/dev/null
+            log_info "Nginx 已重启"
+            ;;
+        reload)
+            check_root
+            log_step "重载 Nginx 配置"
+            if docker exec "$NGINX_CONTAINER_NAME" nginx -t; then
+                docker exec "$NGINX_CONTAINER_NAME" nginx -s reload
+                log_info "Nginx 配置已重载"
+            else
+                log_error "Nginx 配置有错误，无法重载"
+            fi
+            ;;
+    esac
 }
 
-# =============================================================================
-# 信号处理
-# =============================================================================
-
-trap 'log_warn "脚本被用户中断"; exit 1' INT TERM
-
-# 执行主函数
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
