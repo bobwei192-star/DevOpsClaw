@@ -47,7 +47,7 @@ apt-get install -y -qq openssh-client
     #   --tmpfs /tmp:rw,noexec,nosuid,size=64m \
     #   --network host \
     #   -v /home/openclaw:/home/node/.openclaw \
-    #   -e OPENCLAW_GATEWAY_TOKEN="wdO8hDwotUBGIcfNNio6O1jNtPwLbdsM6tsrPVY643DmoGLUVYnkYt6APZcBAy3q" \
+    #   -e OPENCLAW_GATEWAY_TOKEN="your_secure_gateway_token_here" \
     #   ghcr.io/openclaw/openclaw:latest \
     #   node openclaw.mjs gateway --allow-unconfigured
 

@@ -122,9 +122,56 @@ check_root() {
 check_docker() {
     log_step "检查 Docker 环境"
     
+    # 检查独立的 Docker 安装脚本
+    local docker_install_script="$PROJECT_ROOT/deploy_docker/install_docker.sh"
+    
     if ! command -v docker &>/dev/null; then
-        log_warn "Docker 未安装，正在安装..."
-        install_docker
+        log_warn "Docker 未安装"
+        echo
+        echo -e "${CYAN}选项:${NC}"
+        echo "  [1] 使用独立脚本安装 Docker (推荐，更完善)"
+        echo "  [2] 使用内置逻辑安装 Docker"
+        echo "  [3] 退出，手动安装"
+        echo
+        read -p "请选择 (1-3): " choice
+        
+        case $choice in
+            1)
+                if [[ -f "$docker_install_script" ]]; then
+                    log_info "调用独立安装脚本: $docker_install_script"
+                    chmod +x "$docker_install_script"
+                    "$docker_install_script"
+                    log_info "Docker 安装完成，请重新运行 deploy_all.sh"
+                    exit 0
+                else
+                    log_error "独立安装脚本不存在: $docker_install_script"
+                    log_info "使用内置逻辑安装..."
+                    install_docker
+                fi
+                ;;
+            2)
+                log_info "使用内置逻辑安装 Docker..."
+                install_docker
+                ;;
+            3)
+                log_info "用户选择退出"
+                echo
+                echo -e "${YELLOW}手动安装 Docker 的方法:${NC}"
+                echo "  方法 1: 运行独立脚本"
+                echo "    chmod +x $docker_install_script"
+                echo "    sudo $docker_install_script"
+                echo
+                echo "  方法 2: 使用 Docker Desktop（WSL 环境推荐）"
+                echo "    1. 安装 Docker Desktop for Windows"
+                echo "    2. Settings → Resources → WSL Integration → 启用你的发行版"
+                echo
+                exit 0
+                ;;
+            *)
+                log_error "无效选项"
+                exit 1
+                ;;
+        esac
     else
         log_info "Docker 已安装: $(docker --version)"
     fi
@@ -523,38 +570,201 @@ generate_nginx_ssl_certificates() {
 # 部署函数
 # =============================================================================
 
+# =============================================================================
+# Docker 镜像源配置（多源重试）
+# =============================================================================
+# 为每个服务配置多个备选镜像源，防止网络问题导致拉取失败
+# 按优先级排序，第一个失败后自动尝试下一个
+
+# Jenkins 镜像源
+declare -A JENKINS_IMAGE_SOURCES=(
+    ["primary"]="jenkins/jenkins:lts-jdk17"
+    ["dockerhub"]="jenkins/jenkins:lts-jdk17"
+    ["aliyun_mirror"]="registry.cn-hangzhou.aliyuncs.com/library/jenkins:lts-jdk17"
+    ["tencent_mirror"]="ccr.ccs.tencentyun.com/library/jenkins:lts-jdk17"
+)
+
+# GitLab 镜像源
+declare -A GITLAB_IMAGE_SOURCES=(
+    ["primary"]="gitlab/gitlab-ce:latest"
+    ["dockerhub"]="gitlab/gitlab-ce:latest"
+    ["aliyun_mirror"]="registry.cn-hangzhou.aliyuncs.com/gitlab/gitlab-ce:latest"
+    ["tencent_mirror"]="ccr.ccs.tencentyun.com/gitlab/gitlab-ce:latest"
+)
+
+# OpenClaw 镜像源
+declare -A OPENCLAW_IMAGE_SOURCES=(
+    ["primary"]="ghcr.io/openclaw/openclaw:latest"
+    ["github"]="ghcr.io/openclaw/openclaw:latest"
+    # 注意: OpenClaw 镜像主要在 GHCR，国内可能需要配置代理
+)
+
+# Nginx 镜像源
+declare -A NGINX_IMAGE_SOURCES=(
+    ["primary"]="nginx:alpine"
+    ["dockerhub"]="nginx:alpine"
+    ["aliyun_mirror"]="registry.cn-hangzhou.aliyuncs.com/library/nginx:alpine"
+    ["tencent_mirror"]="ccr.ccs.tencentyun.com/library/nginx:alpine"
+)
+
+# 拉取镜像（支持多源重试）
+# 参数:
+#   $1: 服务名称 (openclaw, jenkins, gitlab, nginx)
+#   $2: 目标标签名 (可选，用于 docker tag)
+pull_image_with_fallback() {
+    local service="$1"
+    local target_tag="${2:-}"
+    local -n sources  # 引用对应的镜像源数组
+    
+    # 选择对应的镜像源数组
+    case "$service" in
+        openclaw)
+            sources=("${!OPENCLAW_IMAGE_SOURCES[@]}")
+            ;;
+        jenkins)
+            sources=("${!JENKINS_IMAGE_SOURCES[@]}")
+            ;;
+        gitlab)
+            sources=("${!GITLAB_IMAGE_SOURCES[@]}")
+            ;;
+        nginx)
+            sources=("${!NGINX_IMAGE_SOURCES[@]}")
+            ;;
+        *)
+            log_error "未知服务: $service"
+            return 1
+            ;;
+    esac
+    
+    local max_retries=3
+    local attempt=1
+    local success=false
+    local pulled_image=""
+    
+    log_info "尝试拉取 $service 镜像（支持多源重试，最多 $max_retries 次）..."
+    
+    # 按顺序尝试每个镜像源
+    for source_name in "${sources[@]}"; do
+        local image_var="${service^^}_IMAGE_SOURCES[$source_name]"
+        local image="${!image_var}"
+        
+        if [[ -z "$image" ]]; then
+            continue
+        fi
+        
+        log_info "尝试源 [$source_name]: $image"
+        
+        # 每个源最多尝试 max_retries 次
+        for ((i=1; i<=max_retries; i++)); do
+            log_info "  第 $i 次尝试拉取..."
+            
+            if docker pull "$image"; then
+                log_info "  ✓ 镜像拉取成功: $image"
+                pulled_image="$image"
+                success=true
+                break 2  # 跳出双重循环
+            else
+                log_warn "  第 $i 次尝试失败"
+                if [[ $i -lt $max_retries ]]; then
+                    log_info "  等待 5 秒后重试..."
+                    sleep 5
+                fi
+            fi
+        done
+    done
+    
+    # 如果所有源都失败了
+    if [[ "$success" != true ]]; then
+        log_error "所有镜像源都尝试过了，仍然失败"
+        log_warn "可能的解决方案:"
+        echo
+        echo "  1. 检查网络连接"
+        echo "  2. 配置 Docker 镜像加速器:"
+        echo "     编辑 /etc/docker/daemon.json 添加:"
+        echo '     {'
+        echo '       "registry-mirrors": ['
+        echo '         "https://docker.1ms.run",'
+        echo '         "https://docker.xuanyuan.me",'
+        echo '         "https://docker.xuanyuan.us.kg",'
+        echo '         "https://docker.chenby.cn",'
+        echo '         "https://docker.xuanyuan.in"'
+        echo '       ]'
+        echo '     }'
+        echo "     然后执行: sudo systemctl restart docker"
+        echo
+        echo "  3. 配置代理（如需访问 GHCR）"
+        echo "     export HTTP_PROXY=http://127.0.0.1:7890"
+        echo "     export HTTPS_PROXY=http://127.0.0.1:7890"
+        echo
+        return 1
+    fi
+    
+    # 如果需要重命名标签（用于与 docker-compose 中定义的标签匹配）
+    if [[ -n "$target_tag" && "$pulled_image" != "$target_tag" ]]; then
+        log_info "重命名镜像: $pulled_image -> $target_tag"
+        if docker tag "$pulled_image" "$target_tag"; then
+            log_info "  ✓ 镜像重命名成功"
+        else
+            log_warn "  镜像重命名失败，但拉取已成功"
+        fi
+    fi
+    
+    return 0
+}
+
+# 简化版本：根据服务名获取目标标签
+get_target_image_tag() {
+    local service="$1"
+    local image_var="${service^^}_IMAGE"
+    
+    # 尝试从 .env 文件获取
+    local image=$(grep "^${image_var}=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 || true)
+    
+    if [[ -n "$image" ]]; then
+        echo "$image"
+        return 0
+    fi
+    
+    # 使用默认值
+    case "$service" in
+        openclaw)
+            echo "ghcr.io/openclaw/openclaw:latest"
+            ;;
+        jenkins)
+            echo "jenkins/jenkins:lts-jdk17"
+            ;;
+        gitlab)
+            echo "gitlab/gitlab-ce:latest"
+            ;;
+        nginx)
+            echo "nginx:alpine"
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
 pull_images() {
     log_step "拉取 Docker 镜像"
     
     local services=($DEPLOY_SERVICES)
     
     for service in "${services[@]}"; do
-        log_info "拉取 $service 镜像..."
+        # 获取目标镜像标签（与 docker-compose.yml 一致）
+        local target_tag=$(get_target_image_tag "$service")
         
-        local image_var="${service^^}_IMAGE"
-        local image=$(grep "^${image_var}=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2 || true)
+        log_info "拉取 $service 镜像 (目标: $target_tag)..."
         
-        if [[ -z "$image" ]]; then
-            case $service in
-                openclaw)
-                    image="ghcr.io/openclaw/openclaw:latest"
-                    ;;
-                jenkins)
-                    image="jenkins/jenkins:lts-jdk17"
-                    ;;
-                gitlab)
-                    image="gitlab/gitlab-ce:latest"
-                    ;;
-            esac
-        fi
-        
-        log_info "镜像: $image"
-        
-        if $DOCKER_COMPOSE_CMD pull $service; then
+        # 使用多源重试机制
+        if pull_image_with_fallback "$service" "$target_tag"; then
             log_info "$service 镜像拉取成功 ✓"
         else
             log_warn "$service 镜像拉取失败，将在启动时尝试"
+            log_warn "建议: 配置 Docker 镜像加速器后重试"
         fi
+        
+        echo
     done
 }
 

@@ -1,7 +1,11 @@
 #!/bin/bash
 # 修复 OpenClaw 配置，启用 API 端点
+# 注意: 此文件仅供参考，请使用 deploy_all.sh 或 deploy_openclaw.sh
 
 echo "=== 修复 OpenClaw 配置 ==="
+echo "注意: 此脚本仅供参考"
+echo "推荐使用: ./deploy_all.sh 或 ./deploy_openclaw/deploy_openclaw.sh"
+echo
 
 # 停止现有容器
 echo "1. 停止 OpenClaw 容器..."
@@ -13,26 +17,24 @@ sleep 2
 
 # 重新启动 OpenClaw，绑定到所有接口
 echo "2. 重新启动 OpenClaw（绑定到 0.0.0.0）..."
-docker run -d \
-  --name openclaw \
-  --network host \
-  -e OPENCLAW_GATEWAY_TOKEN="wdO8hDwotUBGIcfNNio6O1jNtPwLbdsM6tsrPVY643DmoGLUVYnkYt6APZcBAy3q" \
-  -v /home/node/.openclaw:/home/node/.openclaw \
-  --restart unless-stopped \
-  ghcr.io/openclaw/openclaw:latest \
-  node openclaw.mjs gateway \
-  --allow-unconfigured \
-  --bind 0.0.0.0
-
-echo "3. 等待 OpenClaw 启动..."
-sleep 5
+echo "注意: 请将 your_secure_gateway_token_here 替换为实际的 Token"
+echo "示例命令:"
+echo "  docker run -d \\"
+echo "    --name openclaw \\"
+echo "    --network host \\"
+echo "    -e OPENCLAW_GATEWAY_TOKEN=\"your_secure_gateway_token_here\" \\"
+echo "    -v /home/node/.openclaw:/home/node/.openclaw \\"
+echo "    --restart unless-stopped \\"
+echo "    ghcr.io/openclaw/openclaw:latest \\"
+echo "    node openclaw.mjs gateway \\"
+echo "    --allow-unconfigured \\"
+echo "    --bind 0.0.0.0"
+echo
 
 # 验证
-echo "4. 验证 OpenClaw 状态..."
-curl -s http://127.0.0.1:18789/healthz
+echo "3. 验证 OpenClaw 状态..."
+echo "   启动后运行: curl -s http://127.0.0.1:18789/healthz"
 
 echo ""
 echo "=== 完成 ==="
-echo "OpenClaw 已重启，现在可以通过以下地址访问："
-echo "  - 本地: http://127.0.0.1:18789"
-echo "  - 外部: http://192.168.43.17:18789"
+echo "请使用 deploy_all.sh 或 deploy_openclaw.sh 进行完整部署"

@@ -13,7 +13,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SSL_DIR="$SCRIPT_DIR/../nginx/ssl"
+SSL_DIR="$SCRIPT_DIR/nginx/ssl"
 OPENSSL_CONF="$SSL_DIR/openssl.cnf"
 
 # 颜色定义

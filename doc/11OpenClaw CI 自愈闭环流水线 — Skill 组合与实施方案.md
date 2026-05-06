@@ -4,7 +4,37 @@
 > **日期**: 2026-05-06  
 > **目标**: 将传统 Jenkins Pipeline 改造为 AI 驱动的自愈闭环系统  
 > **核心仓库**: `github.com/bobwei192-star/openclaw-skill-ci-selfheal`
+如果定位到被测系统业务代码（src/main/ 等），不要修改。只修复测试脚本或配置类文件。如需修改业务代码，回复 CANNOT_FIX_SRC，由人工处理。
+你的三层架构图很好，但有几个 Skill 的使用优先级需要调整：
 
+Skill	当前定位	优化建议
+ci-cd-watchdog	阶段2：日志解析	直接用它的分析输出作为 Prompt 输入，而不是自己重新解析
+pipelinelint	AI修复后校验	修复前也跑一次，先告诉 AI "你的第一版有问题，请修正"
+self-improving-agent	可选增强	提升到核心闭环，它记录成功/失败案例后，同类问题第二次修复速度提升 60%+
+关键优化：把 self-improving-agent 从第三层提到第一层。它的价值在于——第二次遇到 sh 'date--' 这类错误时，不需要再让 AI 推理一遍，直接从经验库里找修复方案。
+
+4. 状态管理的单次事件幂等性
+你文档中的 .self-heal-state.json 状态文件没有防止同一构建事件被重复处理的机制。
+
+建议改动：增加一个 processed_builds 黑名单：
+
+json
+{
+    "version": "4.0.0",
+    "chains": {
+        "example-pipeline": {
+            "current_retry": 1,
+            "status": "running",
+            "processed_builds": [42, 44, 46],
+            ...
+        }
+    }
+}
+在 process_event() 开头加一行检查：
+
+python
+if build_number in chain.get("processed_builds", []):
+    return {"status": "skipped", "reason": "duplicate_event"}
 ---
 
 ## 目录

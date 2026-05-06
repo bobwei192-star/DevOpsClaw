@@ -338,5 +338,5 @@ openclaw skills info jenkins
 
 
 export JENKINS_URL="http://localhost:8081"
-export JENKINS_USER="zhangsan"
-export JENKINS_API_TOKEN="11b28ded03fd5260903f1d6c3a6c8a8c22"
+export JENKINS_USER="your_jenkins_user"
+export JENKINS_API_TOKEN="your_jenkins_api_token_here"
