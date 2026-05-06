@@ -1,0 +1,61 @@
+- job:
+    name: test-failure-pipeline
+    defaults: global
+    description: 'Test Pipeline for Self-Healing Demo - Managed by JJB'
+    display-name: 'Test Failure Pipeline (Self-Healing Demo)'
+    
+    parameters:
+      - string:
+          name: TEST_COMMAND
+          default: 'date--'
+          description: 'Command to execute (intentionally wrong for demo)'
+    
+    dsl: |
+      pipeline {
+        agent any
+        
+        stages {
+          stage('Run Command') {
+            steps {
+              echo "Executing command: ${params.TEST_COMMAND}"
+              sh "${params.TEST_COMMAND}"
+            }
+          }
+          
+          stage('Verify Success') {
+            steps {
+              echo 'All steps completed successfully!'
+              sh 'echo "Pipeline verification passed"'
+            }
+          }
+        }
+        
+        post {
+          always {
+            echo 'Notifying Bridge service...'
+            script {
+              try {
+                def payload = [
+                  jobName: env.JOB_NAME,
+                  buildNumber: env.BUILD_NUMBER,
+                  status: currentBuild.currentResult,
+                  buildTag: env.BUILD_TAG,
+                  isOpenclaw: false,
+                  retryCount: 0
+                ]
+                
+                def bridgeUrl = env.BRIDGE_URL ?: 'http://devopsclaw-bridge:5000'
+                
+                sh """
+                  curl -s -X POST \\
+                    -H "Content-Type: application/json" \\
+                    -d '${groovy.json.JsonOutput.toJson(payload)}' \\
+                    ${bridgeUrl}/webhook/jenkins
+                """
+              } catch (Exception e) {
+                echo "Failed to notify Bridge: ${e.getMessage()}"
+              }
+            }
+          }
+        }
+      }

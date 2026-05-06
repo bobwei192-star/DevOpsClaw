@@ -1,0 +1,166 @@
+version: '3.8'
+
+networks:
+  devopsclaw-network:
+    driver: bridge
+    name: ${DOCKER_NETWORK:-devopsclaw-network}
+
+volumes:
+  jenkins-home:
+    name: ${COMPOSE_PROJECT_NAME:-devopsclaw}_jenkins-home
+    driver: local
+  openclaw-data:
+    name: ${COMPOSE_PROJECT_NAME:-devopsclaw}_openclaw-data
+    driver: local
+  gitlab-config:
+    name: ${COMPOSE_PROJECT_NAME:-devopsclaw}_gitlab-config
+    driver: local
+  gitlab-logs:
+    name: ${COMPOSE_PROJECT_NAME:-devopsclaw}_gitlab-logs
+    driver: local
+  gitlab-data:
+    name: ${COMPOSE_PROJECT_NAME:-devopsclaw}_gitlab-data
+    driver: local
+  nginx-logs:
+    name: ${COMPOSE_PROJECT_NAME:-devopsclaw}_nginx-logs
+    driver: local
+
+services:
+  openclaw:
+    image: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}
+    container_name: ${OPENCLAW_CONTAINER_NAME:-devopsclaw-openclaw}
+    restart: unless-stopped
+    user: "1000:1000"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    networks:
+      - devopsclaw-network
+    ports:
+      - "${OPENCLAW_BIND:-127.0.0.1}:${OPENCLAW_PORT:-18789}:18789"
+    volumes:
+      - openclaw-data:/home/node/.openclaw
+    environment:
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    working_dir: /home/node/openclaw
+    command: >
+      node openclaw.mjs gateway --allow-unconfigured
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:18789/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    labels:
+      - "devopsclaw.service=openclaw"
+      - "devopsclaw.version=4.1.0"
+      - "devopsclaw.expose_port=${NGINX_ENABLED:-false}"
+
+  jenkins:
+    image: ${JENKINS_IMAGE:-jenkins/jenkins:lts-jdk17}
+    container_name: ${JENKINS_CONTAINER_NAME:-devopsclaw-jenkins}
+    restart: unless-stopped
+    user: root
+    networks:
+      - devopsclaw-network
+    ports:
+      - "${JENKINS_BIND:-127.0.0.1}:${JENKINS_PORT_WEB:-8081}:8080"
+      - "${JENKINS_BIND:-127.0.0.1}:${JENKINS_PORT_AGENT:-50000}:50000"
+    volumes:
+      - jenkins-home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./jjb-configs:/var/jenkins_home/jjb-configs:ro
+    environment:
+      - JENKINS_OPTS=--prefix=/jenkins
+      - JAVA_OPTS=${JENKINS_JAVA_OPTS:--Xmx2g -Xms512m}
+      - JENKINS_URL=${JENKINS_URL:-http://127.0.0.1:8081/jenkins}
+      - OPENCLAW_HOST=${OPENCLAW_CONTAINER_NAME:-devopsclaw-openclaw}
+      - OPENCLAW_PORT=18789
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-deepseek-reasoner}
+      - MAX_RETRY=${MAX_RETRY:-5}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8080/jenkins/login"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    depends_on:
+      - openclaw
+    labels:
+      - "devopsclaw.service=jenkins"
+      - "devopsclaw.version=4.1.0"
+      - "devopsclaw.expose_port=${NGINX_ENABLED:-false}"
+
+  gitlab:
+    image: ${GITLAB_IMAGE:-gitlab/gitlab-ce:latest}
+    container_name: ${GITLAB_CONTAINER_NAME:-devopsclaw-gitlab}
+    restart: unless-stopped
+    hostname: ${GITLAB_HOSTNAME:-gitlab.devopsclaw.local}
+    networks:
+      - devopsclaw-network
+    ports:
+      - "${GITLAB_BIND:-127.0.0.1}:${GITLAB_PORT_HTTP:-8082}:80"
+      - "${GITLAB_BIND:-127.0.0.1}:${GITLAB_PORT_HTTPS:-8443}:443"
+      - "${GITLAB_BIND:-127.0.0.1}:${GITLAB_PORT_SSH:-2222}:22"
+    volumes:
+      - gitlab-config:/etc/gitlab
+      - gitlab-logs:/var/log/gitlab
+      - gitlab-data:/var/opt/gitlab
+    shm_size: ${GITLAB_SHM_SIZE:-512m}
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'http://${GITLAB_HOSTNAME:-gitlab.devopsclaw.local}';
+        gitlab_rails['gitlab_shell_ssh_port'] = ${GITLAB_PORT_SSH:-2222};
+        nginx['listen_port'] = 80;
+        nginx['listen_https'] = false;
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:80/-/health"]
+      interval: 60s
+      timeout: 10s
+      retries: 10
+      start_period: 300s
+    labels:
+      - "devopsclaw.service=gitlab"
+      - "devopsclaw.version=4.1.0"
+      - "devopsclaw.expose_port=${NGINX_ENABLED:-false}"
+
+  nginx:
+    image: ${NGINX_IMAGE:-nginx:alpine}
+    container_name: ${NGINX_CONTAINER_NAME:-devopsclaw-nginx}
+    restart: always
+    networks:
+      - devopsclaw-network
+    ports:
+      - "${NGINX_BIND:-0.0.0.0}:443:443"
+      - "${NGINX_BIND:-0.0.0.0}:${NGINX_PORT_GITLAB:-8929}:8929"
+      - "${NGINX_BIND:-0.0.0.0}:${NGINX_PORT_JENKINS:-8080}:8080"
+      - "${NGINX_BIND:-0.0.0.0}:${NGINX_PORT_OPENCLAW:-18789}:18789"
+      - "${NGINX_BIND:-0.0.0.0}:${NGINX_PORT_HARBOR:-8443}:8443"
+      - "${NGINX_BIND:-0.0.0.0}:${NGINX_PORT_ARTIFACTORY:-8081}:8081"
+      - "${NGINX_BIND:-0.0.0.0}:${NGINX_PORT_TRM:-8085}:8085"
+      - "${NGINX_BIND:-0.0.0.0}:${NGINX_PORT_RABBITMQ:-15672}:15672"
+    volumes:
+      - ./deploy_nginx/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./deploy_nginx/nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./deploy_nginx/nginx/ssl:/etc/nginx/ssl:ro
+      - nginx-logs:/var/log/nginx
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      - jenkins
+      - gitlab
+      - openclaw
+    labels:
+      - "devopsclaw.service=nginx"
+      - "devopsclaw.version=4.1.0"
+      - "devopsclaw.role=reverse-proxy"

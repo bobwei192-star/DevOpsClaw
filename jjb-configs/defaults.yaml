@@ -1,0 +1,16 @@
+- defaults:
+    name: global
+    description: 'Do not edit this job through the web! Managed by Jenkins Job Builder'
+    project-type: pipeline
+    concurrent: false
+    disabled: false
+    logrotate:
+      daysToKeep: 30
+      numToKeep: 50
+    parameters:
+      - string:
+          name: BUILD_BRANCH
+          default: main
+          description: 'Git branch to build'
+    triggers:
+      - pollscm: 'H/5 * * * *'

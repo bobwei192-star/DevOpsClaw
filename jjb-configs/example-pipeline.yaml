@@ -1,0 +1,106 @@
+- job:
+    name: example-pipeline
+    defaults: global
+    description: 'Example Pipeline Project - Managed by JJB'
+    display-name: 'Example Pipeline'
+    
+    parameters:
+      - string:
+          name: ENVIRONMENT
+          default: staging
+          description: 'Target deployment environment'
+      - choice:
+          name: RUN_TESTS
+          choices:
+            - 'true'
+            - 'false'
+          description: 'Whether to run tests'
+    
+    properties:
+      - pipeline-github:
+          display-failures: true
+      - build-discarder:
+          days-to-keep: 30
+          num-to-keep: 20
+    
+    dsl: |
+      pipeline {
+        agent any
+        
+        environment {
+          GIT_URL = 'http://devopsclaw-gitlab/my-group/my-project.git'
+          DOCKER_REGISTRY = 'registry.example.com'
+        }
+        
+        stages {
+          stage('Checkout') {
+            steps {
+              checkout scm
+            }
+          }
+          
+          stage('Build') {
+            steps {
+              echo 'Building the project...'
+              sh 'echo "Build step executed at $(date)"'
+            }
+          }
+          
+          stage('Test') {
+            when {
+              expression { params.RUN_TESTS == 'true' }
+            }
+            steps {
+              echo 'Running tests...'
+              sh 'echo "Tests passed"'
+            }
+          }
+          
+          stage('Deploy') {
+            when {
+              branch 'main'
+            }
+            steps {
+              echo "Deploying to ${params.ENVIRONMENT}..."
+              sh 'echo "Deployment successful"'
+            }
+          }
+        }
+        
+        post {
+          always {
+            echo 'Pipeline execution completed'
+            script {
+              try {
+                def payload = [
+                  jobName: env.JOB_NAME,
+                  buildNumber: env.BUILD_NUMBER,
+                  status: currentBuild.currentResult,
+                  buildTag: env.BUILD_TAG,
+                  isOpenclaw: false,
+                  retryCount: 0
+                ]
+                
+                def bridgeUrl = env.BRIDGE_URL ?: 'http://devopsclaw-bridge:5000'
+                
+                sh """
+                  curl -s -X POST \\
+                    -H "Content-Type: application/json" \\
+                    -d '${groovy.json.JsonOutput.toJson(payload)}' \\
+                    ${bridgeUrl}/webhook/jenkins
+                """
+              } catch (Exception e) {
+                echo "Failed to notify Bridge: ${e.getMessage()}"
+              }
+            }
+          }
+          
+          success {
+            echo 'Pipeline succeeded!'
+          }
+          
+          failure {
+            echo 'Pipeline failed!'
+          }
+        }
+      }
