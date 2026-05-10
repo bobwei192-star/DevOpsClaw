@@ -60,15 +60,103 @@ docker compose up -d
 
 ### Self-Healing Pipeline
 
-```mermaid
-flowchart LR
-    A[Build Failed] --> B[AI Diagnosis]
-    B --> C[Generate Fix]
-    C --> D[Update Config]
-    D --> E[Trigger Rebuild]
-    E -->|Success| F[Done]
-    E -->|Failed| G[Retry<br/>Max 5 Rounds]
-    G --> B
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    CI Build Failure Trigger                          │
+│              Jenkins / GitLab CI / GitHub Actions                    │
+└───────────────────────────┬─────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  G0 · Security Gate                                                  │
+│  · Whitelist check: repo + branch allowed?                           │
+│  · Protected branches (main/release/*) → block directly              │
+│  · Deduplication lock: same (repo + branch + error type)             │
+└─────────────────┬───────────────┬───────────────────────────────────┘
+                  │               │
+           ✅ Pass         ❌ Block → notify + log
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  S1 · Information Collection                                         │
+│  · Build logs (raw + parsed)                                         │
+│  · Pipeline DSL / JJB YAML (read-only, no modification)              │
+│  · Source diff + environment snapshot                                │
+│  · Historical failure pattern matching + desensitization             │
+└───────────────────────────┬─────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  G1 · Failure Pre-check                                              │
+│  Block non-self-healable scenarios:                                  │
+│  · Infrastructure down / Flaky Test / Security gate / 3rd-party down │
+│  · Business logic bugs (assertion failure / regression) → manual     │
+│  · Self-healable: compile / dependency / config / env var missing    │
+└─────────────────┬───────────────┬───────────────────────────────────┘
+                  │               │
+           ✅ Healable     ❌ Non-healable → diagnosis report → manual
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  S2 · AI Diagnosis                                                   │
+│  Input: desensitized logs + DSL + diff + historical failures         │
+│  Output: root cause + fix code + type tag + confidence (0.0~1.0)     │
+│    · ≥ 0.85 → high confidence, auto-fix                              │
+│    · 0.60~0.85 → medium confidence, needs verification               │
+│    · < 0.60 → low confidence, degrade to suggestion only             │
+└───────────────────────────┬─────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  S3 · Fix Decision                                                   │
+│                                                                      │
+│  Decision Matrix (error type × Git permission × confidence):         │
+│  ┌─────────────────┬──────────────────────┬─────────────────────┐    │
+│  │  Error Type     │  ✅ Git + Write      │  ❌ No Git/No Write │    │
+│  ├─────────────────┼──────────────────────┼─────────────────────┤    │
+│  │ Compile/Dep/    │  Create fix branch   │  Generate Patch     │    │
+│  │ Config          │  → commit → push     │  for manual apply   │    │
+│  │                 │  → trigger rebuild   │                     │    │
+│  │                 │  → create PR         │                     │    │
+│  ├─────────────────┼──────────────────────┼─────────────────────┤    │
+│  │ Test failure/   │  Generate Patch      │  Generate Patch     │    │
+│  │ Logic change    │  → notify maintainer │  → notify ops       │    │
+│  ├─────────────────┼──────────────────────┼─────────────────────┤    │
+│  │ Environment/    │  Generate suggestion │  Generate suggestion│    │
+│  │ Infrastructure  │  → notify ops        │  → notify ops       │    │
+│  └─────────────────┴──────────────────────┴─────────────────────┘    │
+│                                                                      │
+│  Special: CANNOT_FIX_SRC (needs business code change) → stop, manual │
+│  Confidence < 0.60 → degrade to diagnosis report regardless of type  │
+└─────────────────────────────────────────────────────────────────────┘
+                            │
+                  ┌─────────┴─────────┐
+                  │                   │
+           Trigger auto-rebuild   Patch/Report output
+            (branch path only)     → manual review
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  S4 · Verification Loop                                              │
+│                                                                      │
+│  Auto-rebuild path:                                                  │
+│    ✅ Success → auto-create PR (fix→target) + AI diagnosis → Review  │
+│    ❌ Failure → retry check (max 3 times) → carry historical Reward   │
+│              → exceeded → circuit breaker → alert → manual fallback  │
+│                                                                      │
+│  Manual path:                                                        │
+│    → review Patch → manual apply → trigger rebuild → record result   │
+│                                                                      │
+│  Feedback loop:                                                      │
+│    PR result (accepted/rejected/modified) → store → Prompt optimize  │
+└─────────────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════
+  [ Foundation ] · Capabilities across all stages
+  · 🔒 Concurrency control: one event per repo+branch (file lock/semaphore)
+  · 📝 Audit log: full traceability of all AI decisions and auto-operations
+  · 🔌 Extension points: G0 whitelist/G1 pre-check/S2 model/S3 matrix configurable
+═══════════════════════════════════════════════════════════════════════
 ```
 
 ---
