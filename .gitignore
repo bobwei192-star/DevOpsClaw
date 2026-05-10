@@ -8,7 +8,10 @@
 .env
 .env.local
 .env.*.local
+.env.backup
+.env.bak
 .openclaw_token
+.openclaw_token.bak
 *.token
 *.secret
 
@@ -117,3 +120,5 @@ tests/results/
 # .env.example     - 环境变量示例模板
 # deploy_nginx/nginx/ssl/*.crt  - SSL 证书（公钥，可提交）
 # 但 *.key 是私钥，绝对不能提交！
+
+config/.global_settings.yaml

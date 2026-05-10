@@ -59,6 +59,10 @@ GITLAB_DEPLOY_SCRIPT="$PROJECT_ROOT/deploy_gitlab/deploy_gitlab.sh"
 OPENCLAW_DEPLOY_SCRIPT="$PROJECT_ROOT/deploy_openclaw/deploy_openclaw.sh"
 NGINX_DEPLOY_SCRIPT="$PROJECT_ROOT/deploy_nginx/deploy_nginx.sh"
 
+# 容器名称
+OPENCLAW_CONTAINER_NAME="${OPENCLAW_CONTAINER_NAME:-devopsclaw-openclaw}"
+NGINX_CONTAINER_NAME="${NGINX_CONTAINER_NAME:-devopsclaw-nginx}"
+
 # 端口配置
 PORTS=(
     "OpenClaw:18789"
@@ -141,11 +145,13 @@ show_help() {
     echo "  --reset-openclaw-device       重置 OpenClaw 设备（解决 device signature expired 问题）"
     echo "  --list-openclaw-devices       列出 OpenClaw 待配对设备"
     echo "  --approve-openclaw-device     批准 OpenClaw 设备配对（需要 UUID 参数）"
+    echo "  --deploy-openclaw-standalone  一键部署/修复 OpenClaw（清数据+生成Token+部署+配置Nginx）"
     echo
     echo -e "${BLUE}示例:${NC}"
     echo "  sudo ./deploy_all.sh                              # 交互式部署"
     echo "  sudo ./deploy_all.sh --get-jenkins-password      # 获取 Jenkins 密码"
     echo "  sudo ./deploy_all.sh --get-gitlab-password       # 获取 GitLab 密码"
+    echo "  sudo ./deploy_all.sh --deploy-openclaw-standalone  # 一键部署/修复 OpenClaw"
     echo "  sudo ./deploy_all.sh --reset-openclaw-device     # 重置 OpenClaw 设备"
     echo "  sudo ./deploy_all.sh --list-openclaw-devices     # 列出待配对设备"
     echo "  sudo ./deploy_all.sh --approve-openclaw-device <UUID>  # 批准设备配对"
@@ -218,6 +224,306 @@ approve_openclaw_device() {
         log_error "OpenClaw 部署脚本不存在或不可执行: $OPENCLAW_DEPLOY_SCRIPT"
         exit 1
     fi
+}
+
+deploy_openclaw_standalone() {
+    local COMPOSE_CMD=""
+    if command -v docker-compose &>/dev/null; then
+        COMPOSE_CMD="docker-compose"
+    elif docker compose version &>/dev/null 2>&1; then
+        COMPOSE_CMD="docker compose"
+    else
+        log_error "docker-compose 未安装"
+        exit 1
+    fi
+
+    log_banner
+    log_step "OpenClaw 一键部署/修复"
+
+    # =========================================================================
+    # Phase 1: 清理旧环境
+    # =========================================================================
+    log_step "Phase 1: 清理旧容器和数据卷"
+
+    if docker ps -q --filter "name=$OPENCLAW_CONTAINER_NAME" 2>/dev/null | grep -q .; then
+        log_info "停止旧 OpenClaw 容器..."
+        docker stop "$OPENCLAW_CONTAINER_NAME" 2>/dev/null || true
+    fi
+    if docker ps -aq --filter "name=$OPENCLAW_CONTAINER_NAME" 2>/dev/null | grep -q .; then
+        log_info "删除旧 OpenClaw 容器..."
+        docker rm -f "$OPENCLAW_CONTAINER_NAME" 2>/dev/null || true
+    fi
+
+    local VOLUME_NAME="devopsclaw_openclaw-data"
+    if docker volume ls -q --filter "name=$VOLUME_NAME" 2>/dev/null | grep -q .; then
+        log_info "清空数据卷: $VOLUME_NAME"
+        docker run --rm -v "${VOLUME_NAME}:/data" alpine sh -c "rm -rf /data/* /data/.[!.]* /data/..?* 2>/dev/null; echo '已清空'" 2>/dev/null || true
+    fi
+
+    # =========================================================================
+    # Phase 2: 生成 Token
+    # =========================================================================
+    log_step "Phase 2: 生成 Gateway Token"
+
+    local token
+    if command -v openssl &>/dev/null; then
+        token=$(openssl rand -hex 32)
+    elif command -v date &>/dev/null && command -v sha256sum &>/dev/null; then
+        token=$(date +%s%N | sha256sum | awk '{print $1}')
+    else
+        token="devopsclaw_$(date +%s)_$(od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n' || echo "fallback")"
+    fi
+
+    local OPENCLAW_TOKEN_FILE="$PROJECT_ROOT/.openclaw_token"
+    echo "$token" > "$OPENCLAW_TOKEN_FILE"
+    chmod 600 "$OPENCLAW_TOKEN_FILE"
+    log_info "Token 已保存到: $OPENCLAW_TOKEN_FILE"
+
+    if [[ -f "$ENV_FILE" ]]; then
+        if grep -q "^OPENCLAW_GATEWAY_TOKEN=your_secure_gateway_token_here" "$ENV_FILE" 2>/dev/null; then
+            sed -i "s/^OPENCLAW_GATEWAY_TOKEN=your_secure_gateway_token_here$/OPENCLAW_GATEWAY_TOKEN=$token/" "$ENV_FILE"
+            log_info "已替换 .env 中的占位 Token"
+        elif grep -q "^OPENCLAW_GATEWAY_TOKEN=" "$ENV_FILE" 2>/dev/null; then
+            sed -i "s/^OPENCLAW_GATEWAY_TOKEN=.*$/OPENCLAW_GATEWAY_TOKEN=$token/" "$ENV_FILE"
+            log_info "已更新 .env 中的 Token"
+        else
+            echo "OPENCLAW_GATEWAY_TOKEN=$token" >> "$ENV_FILE"
+            log_info "已追加 Token 到 .env"
+        fi
+    else
+        cp "$ENV_EXAMPLE" "$ENV_FILE"
+        sed -i "s/^OPENCLAW_GATEWAY_TOKEN=your_secure_gateway_token_here$/OPENCLAW_GATEWAY_TOKEN=$token/" "$ENV_FILE"
+        log_info "已创建 .env 并写入 Token"
+    fi
+
+    echo -e "\n${BOLD}${CYAN}══════════════════════════════════════════════════${NC}"
+    echo -e "${BOLD}${CYAN}  你的 Gateway Token（请复制保存）：${NC}"
+    echo -e "${BOLD}${YELLOW}  $token${NC}"
+    echo -e "${BOLD}${CYAN}══════════════════════════════════════════════════${NC}\n"
+
+    # =========================================================================
+    # Phase 3: 预写入 openclaw.json（容器启动前写死 token 认证）
+    # =========================================================================
+    log_step "Phase 3: 预写入 openclaw.json 到数据卷"
+
+    docker run --rm -v "${VOLUME_NAME}:/data" alpine sh -c "cat > /data/openclaw.json << 'INNEREOF'
+{
+  \"gateway\": {
+    \"mode\": \"local\",
+    \"auth\": {
+      \"token\": \"$token\"
+    },
+    \"controlUi\": {
+      \"allowedOrigins\": [
+        \"http://127.0.0.1:18789\",
+        \"http://localhost:18789\",
+        \"https://127.0.0.1:18442\",
+        \"https://localhost:18442\"
+      ]
+    },
+    \"trustedProxies\": [
+      \"127.0.0.1\",
+      \"::1\",
+      \"172.16.0.0/12\",
+      \"10.0.0.0/8\",
+      \"192.168.0.0/16\"
+    ]
+  }
+}
+INNEREOF" 2>/dev/null && log_info "✓ openclaw.json 已写入数据卷（含 token 认证 + mode=local）" || log_warn "openclaw.json 写入失败"
+
+    # =========================================================================
+    # Phase 4: 用 docker run 部署 OpenClaw（不用 compose，去掉 --allow-unconfigured）
+    # =========================================================================
+    log_step "Phase 4: 部署 OpenClaw 容器（token 认证模式）"
+
+    local OPENCLAW_IMAGE="${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}"
+    local OPENCLAW_PORT="${OPENCLAW_PORT:-18789}"
+    local OPENCLAW_BIND="${OPENCLAW_BIND:-127.0.0.1}"
+
+    log_info "镜像: $OPENCLAW_IMAGE"
+    log_info "端口: $OPENCLAW_BIND:$OPENCLAW_PORT"
+
+    docker run -d \
+        --name "$OPENCLAW_CONTAINER_NAME" \
+        --network devopsclaw-network \
+        --restart unless-stopped \
+        --user "1000:1000" \
+        --cap-drop=ALL \
+        --security-opt=no-new-privileges \
+        --read-only \
+        --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+        -p "${OPENCLAW_BIND}:${OPENCLAW_PORT}:18789" \
+        -v "${VOLUME_NAME}:/home/node/.openclaw" \
+        -e "OPENCLAW_GATEWAY_TOKEN=$token" \
+        -e "LOG_LEVEL=${LOG_LEVEL:-INFO}" \
+        -e "TZ=Asia/Shanghai" \
+        "$OPENCLAW_IMAGE" \
+        node openclaw.mjs gateway --bind lan 2>/dev/null
+
+    log_info "等待容器启动（最多 90 秒）..."
+    local waited=0
+    while [[ $waited -lt 90 ]]; do
+        if docker ps --filter "name=$OPENCLAW_CONTAINER_NAME" --format "{{.Status}}" 2>/dev/null | grep -q "Up"; then
+            sleep 3
+            if docker exec "$OPENCLAW_CONTAINER_NAME" curl -sf http://127.0.0.1:18789/health 2>/dev/null; then
+                log_info "✓ OpenClaw 容器已就绪"
+                break
+            fi
+        fi
+        sleep 5
+        waited=$((waited + 5))
+        echo -n "."
+    done
+    echo
+
+    if ! docker ps -q --filter "name=$OPENCLAW_CONTAINER_NAME" 2>/dev/null | grep -q .; then
+        log_error "OpenClaw 容器启动失败"
+        log_info "查看日志: docker logs $OPENCLAW_CONTAINER_NAME"
+        exit 1
+    fi
+
+    # =========================================================================
+    # Phase 5: 运行 onboard 初始化设备
+    # =========================================================================
+    log_step "Phase 5: 运行 onboard 初始化设备"
+
+    log_info "执行 onboard --mode local（生成设备签名，解决 device signature expired）"
+    echo "y" | docker exec -i "$OPENCLAW_CONTAINER_NAME" node openclaw.mjs onboard --mode local 2>&1 | tee -a "$DEPLOY_LOG" || true
+    log_info "onboard 完成，重启容器使设备签名生效..."
+
+    docker restart "$OPENCLAW_CONTAINER_NAME" 2>/dev/null
+    sleep 10
+
+    log_info "设备初始化完成"
+
+    # =========================================================================
+    # Phase 6: 检查并修复 Nginx OpenClaw 转发
+    # =========================================================================
+    log_step "Phase 6: 检查 Nginx OpenClaw 转发"
+
+    local NGINX_CONTAINER="$NGINX_CONTAINER_NAME"
+    local NGINX_OPENCLAW_CONF="$PROJECT_ROOT/deploy_nginx/nginx/conf.d/openclaw.conf"
+
+    if docker ps -q --filter "name=$NGINX_CONTAINER" 2>/dev/null | grep -q .; then
+        log_info "Nginx 容器正在运行"
+
+        local has_openclaw_map=""
+        has_openclaw_map=$(docker port "$NGINX_CONTAINER" 8442 2>/dev/null | head -1 || echo "")
+        if [[ -z "$has_openclaw_map" ]]; then
+            log_warn "未检测到 18442→8442 端口映射，正在重建 Nginx 容器..."
+
+            local EXISTING_PORTS=""
+            EXISTING_PORTS=$(docker inspect "$NGINX_CONTAINER" --format '{{range $p,$c := .HostConfig.PortBindings}}{{$p}}{{"\n"}}{{end}}' 2>/dev/null)
+            local PORT_ARGS=""
+            while IFS= read -r port_line; do
+                [[ -z "$port_line" ]] && continue
+                local host_binding=""
+                host_binding=$(docker port "$NGINX_CONTAINER" "${port_line%/*}" 2>/dev/null | head -1 | awk '{print $3}' || echo "")
+                if [[ -z "$host_binding" ]]; then
+                    host_binding="${port_line%%/*}"
+                fi
+                PORT_ARGS="$PORT_ARGS -p ${host_binding}:${port_line%/*}/${port_line##*/}"
+            done <<< "$EXISTING_PORTS"
+
+            local VOLUME_ARGS=""
+            VOLUME_ARGS=$(docker inspect "$NGINX_CONTAINER" --format '{{range .Mounts}}-v {{.Source}}:{{.Destination}}:ro {{end}}' 2>/dev/null || echo "")
+
+            if [[ -z "$VOLUME_ARGS" ]]; then
+                VOLUME_ARGS="-v $PROJECT_ROOT/deploy_nginx/nginx/nginx.conf:/etc/nginx/nginx.conf:ro -v $PROJECT_ROOT/deploy_nginx/nginx/conf.d:/etc/nginx/conf.d:ro -v $PROJECT_ROOT/deploy_nginx/nginx/ssl:/etc/nginx/ssl:ro"
+            fi
+
+            docker stop "$NGINX_CONTAINER" 2>/dev/null || true
+            docker rm -f "$NGINX_CONTAINER" 2>/dev/null || true
+
+            docker run -d \
+                --name "$NGINX_CONTAINER" \
+                --network devopsclaw-network \
+                --restart unless-stopped \
+                $VOLUME_ARGS \
+                $PORT_ARGS \
+                -p 127.0.0.1:18442:8442 \
+                nginx:alpine 2>/dev/null && log_info "✓ Nginx 容器已重建（含 OpenClaw 端口）" || log_warn "Nginx 容器重建失败"
+        else
+            log_info "✓ 18442→8442 端口映射已存在"
+        fi
+
+        if [[ -f "$NGINX_OPENCLAW_CONF" ]]; then
+            log_info "✓ openclaw.conf 配置文件存在"
+        else
+            log_warn "openclaw.conf 不存在，正在创建..."
+            cat > "$NGINX_OPENCLAW_CONF" << 'NGINXEOF'
+server {
+    listen 8442 ssl;
+    listen [::]:8442 ssl;
+
+    server_name _;
+
+    ssl_certificate /etc/nginx/ssl/devopsclaw.crt;
+    ssl_certificate_key /etc/nginx/ssl/devopsclaw.key;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    location / {
+        proxy_pass http://devopsclaw-openclaw:18789;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 90;
+        proxy_connect_timeout 5;
+        proxy_send_timeout 90;
+    }
+}
+NGINXEOF
+            log_info "✓ openclaw.conf 已创建"
+        fi
+
+        if docker exec "$NGINX_CONTAINER" nginx -t 2>/dev/null; then
+            docker exec "$NGINX_CONTAINER" nginx -s reload 2>/dev/null
+            log_info "✓ Nginx 配置已重载"
+        else
+            log_warn "Nginx 配置语法错误，跳过重载"
+        fi
+    else
+        log_warn "Nginx 容器未运行，跳过 Nginx 检查"
+        log_info "如需 Nginx 代理，请部署后运行: sudo $NGINX_DEPLOY_SCRIPT --deploy"
+    fi
+
+    # =========================================================================
+    # Phase 7: 输出摘要
+    # =========================================================================
+    echo
+    echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║              OpenClaw 部署完成                                ║${NC}"
+    echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
+    echo
+    echo -e "${BOLD}访问地址:${NC}"
+    echo -e "  直连 (token):      ${CYAN}http://127.0.0.1:18789/#token=${token}${NC}"
+    echo -e "  Nginx (token):     ${CYAN}https://127.0.0.1:18442/#token=${token}${NC}"
+    echo
+    echo -e "${BOLD}Gateway Token:${NC}"
+    echo -e "  ${YELLOW}$token${NC}"
+    echo
+    echo -e "${BOLD}Token 保存位置:${NC}"
+    echo -e "  - $OPENCLAW_TOKEN_FILE"
+    echo -e "  - $ENV_FILE (OPENCLAW_GATEWAY_TOKEN)"
+    echo
+    echo -e "${CYAN}【使用方式】${NC}"
+    echo -e "  用 ${BOLD}Chrome 无痕窗口${NC} 直接打开上面任一地址，Token 会自动注入，无需配对！"
+    echo -e "  如果页面需要手动输入，在\"网关令牌\"框粘贴 Token，点击连接即可。"
+    echo
+    echo -e "${CYAN}【获取 Jenkins/GitLab 密码】${NC}"
+    echo -e "  sudo $0 --get-jenkins-password"
+    echo -e "  sudo $0 --get-gitlab-password"
+    echo
+    echo -e "${GREEN}════════════════════════════════════════════════════════════════${NC}"
 }
 
 # =============================================================================
@@ -565,6 +871,32 @@ print_summary() {
     echo "  Nginx:     $NGINX_DEPLOY_SCRIPT"
     echo
     
+    if [[ " $DEPLOY_SERVICES " =~ " openclaw " ]]; then
+        echo -e "${CYAN}【OpenClaw Gateway Token】${NC}"
+        echo
+        local token_file="$PROJECT_ROOT/.openclaw_token"
+        if [[ -f "$token_file" ]]; then
+            local saved_token
+            saved_token=$(cat "$token_file")
+            if [[ -n "$saved_token" ]]; then
+                echo -e "  Token: ${BOLD}${YELLOW}$saved_token${NC}"
+                echo "  Token 已保存到: $token_file"
+                echo "  也可查看: grep OPENCLAW_GATEWAY_TOKEN $ENV_FILE"
+            fi
+        elif [[ -f "$ENV_FILE" ]]; then
+            local env_token
+            env_token=$(grep "^OPENCLAW_GATEWAY_TOKEN=" "$ENV_FILE" | cut -d'=' -f2)
+            if [[ -n "$env_token" && "$env_token" != "your_secure_gateway_token_here" ]]; then
+                echo -e "  Token: ${BOLD}${YELLOW}$env_token${NC}"
+                echo "  Token 已保存到: $ENV_FILE"
+            fi
+        fi
+        if [[ ! -f "$token_file" ]] && [[ -z "${env_token:-}" || "$env_token" == "your_secure_gateway_token_here" ]]; then
+            echo "  Token 未找到，请运行: sudo $OPENCLAW_DEPLOY_SCRIPT --generate-token"
+        fi
+        echo
+    fi
+    
     echo -e "${YELLOW}【重要提示】${NC}"
     echo "  - 请妥善保存初始密码和 Token"
     echo "  - 部署日志已保存到: $DEPLOY_LOG"
@@ -577,6 +909,7 @@ print_summary() {
     echo "  查看 Docker 日志:     docker logs -f <容器名>"
     echo "  获取 Jenkins 密码:   sudo $0 --get-jenkins-password"
     echo "  获取 GitLab 密码:    sudo $0 --get-gitlab-password"
+    echo "  查看 OpenClaw Token: cat $PROJECT_ROOT/.openclaw_token"
     echo "  重置 OpenClaw 设备:  sudo $0 --reset-openclaw-device"
     echo
     
@@ -712,6 +1045,13 @@ if [[ $# -gt 0 ]]; then
                 log_warn "建议使用 sudo 运行以确保权限"
             fi
             approve_openclaw_device "${2:-}"
+            exit 0
+            ;;
+        --deploy-openclaw-standalone)
+            if [[ $EUID -ne 0 ]]; then
+                log_warn "建议使用 sudo 运行以确保权限"
+            fi
+            deploy_openclaw_standalone
             exit 0
             ;;
         *)

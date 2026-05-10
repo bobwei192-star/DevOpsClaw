@@ -137,7 +137,7 @@ load_env() {
 JENKINS_PORT_WEB="${JENKINS_PORT_WEB:-18081}"
 JENKINS_PORT_AGENT="${JENKINS_PORT_AGENT:-50000}"
 JENKINS_BIND="${JENKINS_BIND:-127.0.0.1}"
-JENKINS_IMAGE="${JENKINS_IMAGE:-jenkins/jenkins:lts-jdk17}"
+JENKINS_IMAGE="${JENKINS_IMAGE:-jenkins/jenkins:2.541.3-lts-jdk21}"
 JENKINS_CONTAINER_NAME="${JENKINS_CONTAINER_NAME:-devopsclaw-jenkins}"
 JENKINS_DATA_DIR="${JENKINS_DATA_DIR:-$PROJECT_DIR/data/jenkins}"
 JENKINS_JAVA_OPTS="${JENKINS_JAVA_OPTS:--Dhudson.security.csrf.GlobalCrumbIssuerConfiguration.DISABLE_CSRF_PROTECTION=true -Dhudson.model.DirectoryBrowserSupport.CSP=\"\"}"

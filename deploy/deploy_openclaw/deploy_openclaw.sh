@@ -191,6 +191,12 @@ deploy_openclaw() {
         log_info "删除已停止的 OpenClaw 容器..."
         docker rm "$OPENCLAW_CONTAINER_NAME" 2>/dev/null || true
     fi
+
+    # 清理旧配置文件（避免残留坏配置导致启动失败）
+    if [[ -f "$OPENCLAW_DATA_DIR/openclaw.json" ]]; then
+        log_info "清理旧 openclaw.json..."
+        rm -f "$OPENCLAW_DATA_DIR/openclaw.json" 2>/dev/null || true
+    fi
     
     log_info "创建 OpenClaw 容器..."
     echo "  - 端口 Web: $OPENCLAW_BIND:$OPENCLAW_PORT_WEB -> 18789"
@@ -198,15 +204,24 @@ deploy_openclaw() {
     echo "  - 数据目录: $OPENCLAW_DATA_DIR"
     echo "  - Gateway Token: $OPENCLAW_TOKEN"
     
+    # 关键修复: 同步容器时间，防止 device signature expired
+    # 原因: 容器和主机时间偏差超过2分钟会导致 WebSocket 认证失败
+    log_info "同步系统时间..."
+    if command -v ntpdate &>/dev/null; then
+        ntpdate -s time.windows.com 2>/dev/null || ntpdate -s pool.ntp.org 2>/dev/null || true
+    fi
+    
     docker run -d \
         --name "$OPENCLAW_CONTAINER_NAME" \
         --network devopsclaw-network \
         --restart unless-stopped \
         -p "$OPENCLAW_BIND:$OPENCLAW_PORT_WEB:18789" \
         -p "$OPENCLAW_BIND:$OPENCLAW_PORT_AGENT:8080" \
-        -v "$OPENCLAW_DATA_DIR:/home/openclaw" \
+        -v "$OPENCLAW_DATA_DIR:/home/node/.openclaw" \
         -e OPENCLAW_GATEWAY_TOKEN="$OPENCLAW_TOKEN" \
         -e GATEWAY_TOKEN="$OPENCLAW_TOKEN" \
+        -e TZ=Asia/Shanghai \
+        -e LOG_LEVEL=INFO \
         "$OPENCLAW_IMAGE"
     
     sleep 5
@@ -332,7 +347,6 @@ approve_openclaw_device() {
 }
 
 print_openclaw_summary() {
-    local mode="${1:-standalone}"
     
     echo
     echo -e "${BOLD}${GREEN}┌─────────────────────────────────────────────────────────────────┐${NC}"
@@ -346,18 +360,27 @@ print_openclaw_summary() {
         log_warn "容器: $OPENCLAW_CONTAINER_NAME - 未运行"
     fi
     
-    if [[ "$mode" == "without_nginx" ]]; then
+    # 检查 Nginx 容器是否在运行
+    local nginx_running=false
+    if docker ps -q --filter "name=devopsclaw-nginx" 2>/dev/null | grep -q .; then
+        nginx_running=true
+    fi
+
+    if [[ "$nginx_running" == "true" ]]; then
+        echo
+        echo -e "${BOLD}OpenClaw 访问地址:${NC}"
+        echo -e "  - Nginx HTTPS (推荐): ${CYAN}https://127.0.0.1:18442${NC}"
+        echo -e "  - Nginx HTTP: ${CYAN}http://127.0.0.1:18442${NC}"
+        echo -e "  - 直连: http://127.0.0.1:$OPENCLAW_PORT_WEB"
+        echo -e "  - Agent 端口: $OPENCLAW_PORT_AGENT"
+    else
         echo
         echo -e "${BOLD}OpenClaw 访问地址:${NC}"
         echo -e "  - 本地访问: ${CYAN}http://127.0.0.1:$OPENCLAW_PORT_WEB${NC}"
         echo -e "  - 网络访问: ${YELLOW}http://<主机IP>:$OPENCLAW_PORT_WEB${NC}"
         echo -e "  - Agent 端口: $OPENCLAW_PORT_AGENT"
-    elif [[ "$mode" == "with_nginx" ]]; then
         echo
-        echo -e "${BOLD}OpenClaw 访问地址:${NC}"
-        echo -e "  - Nginx (推荐): ${CYAN}http://127.0.0.1:18442${NC}"
-        echo -e "  - 直连: http://127.0.0.1:$OPENCLAW_PORT_WEB"
-        echo -e "  - Agent 端口: $OPENCLAW_PORT_AGENT"
+        echo -e "${YELLOW}提示: Nginx 未运行，如需 HTTPS 访问请先部署 Nginx${NC}"
     fi
     
     echo
@@ -367,10 +390,73 @@ print_openclaw_summary() {
         local token
         token=$(cat "$OPENCLAW_TOKEN_FILE")
         if [[ -n "$token" ]]; then
-            log_info "当前 Token: ${token:0:8}...${token: -8}"
+            echo -e "  Token: ${BOLD}${YELLOW}$token${NC}"
+            echo "  Token 文件: $OPENCLAW_TOKEN_FILE"
         fi
     fi
     
+    echo
+}
+
+configure_allowed_origins() {
+    local container_name="${1:-$OPENCLAW_CONTAINER_NAME}"
+    local nginx_openclaw_port="${2:-18442}"
+    local openclaw_port="${3:-$OPENCLAW_PORT_WEB}"
+
+    log_step "配置 OpenClaw 允许的访问来源 (allowedOrigins)"
+
+    if ! docker ps -q --filter "name=$container_name" 2>/dev/null | grep -q .; then
+        log_warn "OpenClaw 容器未运行，跳过 allowedOrigins 配置"
+        return 0
+    fi
+
+    local origins="[\"http://127.0.0.1:$openclaw_port\", \"http://localhost:$openclaw_port\", \"https://127.0.0.1:$nginx_openclaw_port\", \"https://localhost:$nginx_openclaw_port\"]"
+
+    log_info "配置允许的来源: $origins"
+
+    docker exec "$container_name" node -e "
+const fs = require('fs');
+const possiblePaths = [
+    '/home/node/.openclaw/openclaw.json',
+    '/home/openclaw/openclaw.json'
+];
+let configPath = null;
+let config = {};
+for (const p of possiblePaths) {
+    if (fs.existsSync(p)) {
+        configPath = p;
+        try {
+            config = JSON.parse(fs.readFileSync(p, 'utf8'));
+        } catch(e) {
+            config = {};
+        }
+        break;
+    }
+}
+if (!configPath) {
+    configPath = possiblePaths[0];
+    const dir = require('path').dirname(configPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+}
+if (!config.gateway) config.gateway = {};
+if (!config.gateway.controlUi) config.gateway.controlUi = {};
+config.gateway.controlUi.allowedOrigins = $origins;
+// 关键修复: 允许纯 token 认证，跳过设备签名验证
+config.gateway.controlUi.allowInsecureAuth = true;
+if (!config.gateway.auth) config.gateway.auth = {};
+config.gateway.auth.mode = 'token';
+// 绑定到 lan，让 Nginx 可以访问（不能用 0.0.0.0，OpenClaw 只接受 loopback/lan/tailnet/auto/custom）
+if (!config.gateway.bind) config.gateway.bind = 'lan';
+fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+console.log('allowedOrigins + allowInsecureAuth configured at: ' + configPath);
+" 2>/dev/null && {
+        log_info "✓ allowedOrigins 配置完成"
+    } || {
+        log_warn "allowedOrigins 配置失败，请手动配置"
+        log_info "手动配置命令:"
+        echo "  docker exec $container_name node -e \"const fs=require('fs');const c=JSON.parse(fs.readFileSync('/home/node/.openclaw/openclaw.json','utf8'));c.gateway.controlUi={allowedOrigins:['http://127.0.0.1:$openclaw_port','https://127.0.0.1:$nginx_openclaw_port']};fs.writeFileSync('/home/node/.openclaw/openclaw.json',JSON.stringify(c,null,2))\""
+    }
+
     echo
 }
 
@@ -471,7 +557,8 @@ main() {
             fi
             generate_openclaw_token
             deploy_openclaw
-            print_openclaw_summary "without_nginx"
+            configure_allowed_origins
+            print_openclaw_summary
             log_info "OpenClaw 部署完成!"
             ;;
         generate_token)
