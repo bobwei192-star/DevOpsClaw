@@ -1,0 +1,31 @@
+# OpenClaw v5.0 全局配置
+jenkins:
+  base_url: ""
+  username: ""
+  api_token: ""
+
+ai_model:
+  provider: ""
+  model_name: ""
+  api_key: ""
+
+# ============ 修复点在这里 ============
+gitlab:
+  base_url: ""   # 你的 GitLab 实例地址
+  api_token: ""     # GitLab Personal Access Token
+  # 权限要求: api (读写) + read_repository
+
+git:
+  user_name: ""
+  user_email: ""
+  #如果用 HTTPS 方式操作仓库，这里还需要:
+  credential_type: ""       # 或 "ssh_key"
+  token: ""            # 用于 git clone/push 的凭证
+  # 如果用 SSH，需要配:
+  # credential_type: "ssh_key"
+  # ssh_private_key_path: "/home/openclaw/.ssh/id_rsa"
+# ======================================
+
+white_list:
+  repos: ["group/backend-api", "group/frontend-app"]
+  branch_pattern: "^(feat|fix|dev|auto-test)/.*"

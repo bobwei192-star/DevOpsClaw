@@ -146,12 +146,14 @@ show_help() {
     echo "  --list-openclaw-devices       列出 OpenClaw 待配对设备"
     echo "  --approve-openclaw-device     批准 OpenClaw 设备配对（需要 UUID 参数）"
     echo "  --deploy-openclaw-standalone  一键部署/修复 OpenClaw（清数据+生成Token+部署+配置Nginx）"
+    echo "  --deploy-nginx-standalone    一键部署/修复 Nginx（自动检测后端服务+配置反向代理）"
     echo
     echo -e "${BLUE}示例:${NC}"
     echo "  sudo ./deploy_all.sh                              # 交互式部署"
     echo "  sudo ./deploy_all.sh --get-jenkins-password      # 获取 Jenkins 密码"
     echo "  sudo ./deploy_all.sh --get-gitlab-password       # 获取 GitLab 密码"
     echo "  sudo ./deploy_all.sh --deploy-openclaw-standalone  # 一键部署/修复 OpenClaw"
+    echo "  sudo ./deploy_all.sh --deploy-nginx-standalone    # 一键部署/修复 Nginx"
     echo "  sudo ./deploy_all.sh --reset-openclaw-device     # 重置 OpenClaw 设备"
     echo "  sudo ./deploy_all.sh --list-openclaw-devices     # 列出待配对设备"
     echo "  sudo ./deploy_all.sh --approve-openclaw-device <UUID>  # 批准设备配对"
@@ -522,6 +524,337 @@ NGINXEOF
     echo -e "${CYAN}【获取 Jenkins/GitLab 密码】${NC}"
     echo -e "  sudo $0 --get-jenkins-password"
     echo -e "  sudo $0 --get-gitlab-password"
+    echo
+    echo -e "${GREEN}════════════════════════════════════════════════════════════════${NC}"
+}
+
+# =============================================================================
+# Nginx 一键部署/修复函数
+# =============================================================================
+deploy_nginx_standalone() {
+    log_banner
+    log_step "Nginx 一键部署/修复"
+
+    local NGINX_CONF_DIR="$PROJECT_ROOT/deploy_nginx/nginx"
+    local NGINX_SSL_DIR="$NGINX_CONF_DIR/ssl"
+    local NGINX_CONF_D="$NGINX_CONF_DIR/conf.d"
+    local NGINX_CONF="$NGINX_CONF_DIR/nginx.conf"
+    local NGINX_IMAGE="${NGINX_IMAGE:-nginx:alpine}"
+
+    local NGINX_PORT_JENKINS="${NGINX_PORT_JENKINS:-18440}"
+    local NGINX_PORT_GITLAB="${NGINX_PORT_GITLAB:-18441}"
+    local NGINX_PORT_OPENCLAW="${NGINX_PORT_OPENCLAW:-18442}"
+    local NGINX_BIND="${NGINX_BIND:-127.0.0.1}"
+
+    # =========================================================================
+    # Phase 1: 清理旧容器
+    # =========================================================================
+    log_step "Phase 1: 清理旧 Nginx 容器"
+
+    if docker ps -q --filter "name=$NGINX_CONTAINER_NAME" 2>/dev/null | grep -q .; then
+        log_info "停止旧 Nginx 容器..."
+        docker stop "$NGINX_CONTAINER_NAME" 2>/dev/null || true
+    fi
+    if docker ps -aq --filter "name=$NGINX_CONTAINER_NAME" 2>/dev/null | grep -q .; then
+        log_info "删除旧 Nginx 容器..."
+        docker rm -f "$NGINX_CONTAINER_NAME" 2>/dev/null || true
+    fi
+
+    # =========================================================================
+    # Phase 2: 确保 SSL 证书存在
+    # =========================================================================
+    log_step "Phase 2: 检查并生成 SSL 证书"
+
+    if [[ ! -d "$NGINX_SSL_DIR" ]]; then
+        mkdir -p "$NGINX_SSL_DIR"
+    fi
+
+    local cert_names=("devopsclaw" "jenkins" "gitlab" "openclaw" "registry" "harbor" "sonarqube")
+    local need_generate=false
+
+    for name in "${cert_names[@]}"; do
+        if [[ ! -f "$NGINX_SSL_DIR/$name.crt" || ! -f "$NGINX_SSL_DIR/$name.key" ]]; then
+            need_generate=true
+            break
+        fi
+    done
+
+    if [[ "$need_generate" == true ]]; then
+        if ! command -v openssl &>/dev/null; then
+            log_error "openssl 未安装，无法生成证书"
+            exit 1
+        fi
+        log_info "部分 SSL 证书缺失，正在生成自签名证书..."
+
+        for name in "${cert_names[@]}"; do
+            if [[ -f "$NGINX_SSL_DIR/$name.crt" && -f "$NGINX_SSL_DIR/$name.key" ]]; then
+                log_info "跳过已存在的证书: $name"
+                continue
+            fi
+            openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+                -keyout "$NGINX_SSL_DIR/$name.key" \
+                -out "$NGINX_SSL_DIR/$name.crt" \
+                -subj "/C=CN/ST=Beijing/L=Beijing/O=DevOpsClaw/OU=DevOps/CN=$name.local" 2>/dev/null
+            chmod 600 "$NGINX_SSL_DIR/$name.key"
+            chmod 644 "$NGINX_SSL_DIR/$name.crt"
+            log_info "✓ 证书已生成: $name"
+        done
+    else
+        log_info "✓ 所有 SSL 证书已存在"
+    fi
+
+    # =========================================================================
+    # Phase 3: 检测后端服务并确保 Nginx 配置文件存在
+    # =========================================================================
+    log_step "Phase 3: 检测后端服务并准备 Nginx 配置"
+
+    if [[ ! -d "$NGINX_CONF_D" ]]; then
+        mkdir -p "$NGINX_CONF_D"
+    fi
+
+    local detected_services=()
+    local port_map_args=""
+
+    # 检测 Jenkins
+    if docker ps --filter "name=devopsclaw-jenkins" --format "{{.Names}}" 2>/dev/null | grep -q .; then
+        log_info "✓ 检测到 Jenkins 容器"
+        detected_services+=("jenkins")
+        port_map_args="$port_map_args -p ${NGINX_BIND}:${NGINX_PORT_JENKINS}:8440"
+
+        if [[ ! -f "$NGINX_CONF_D/jenkins.conf" ]]; then
+            log_info "创建 jenkins.conf..."
+            cat > "$NGINX_CONF_D/jenkins.conf" << 'NGINXEOF'
+server {
+    listen 8440 ssl;
+    listen [::]:8440 ssl;
+
+    server_name _;
+
+    ssl_certificate /etc/nginx/ssl/devopsclaw.crt;
+    ssl_certificate_key /etc/nginx/ssl/devopsclaw.key;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    client_max_body_size 100m;
+
+    location = / {
+        return 301 /jenkins/;
+    }
+
+    location = /jenkins {
+        return 301 /jenkins/;
+    }
+
+    location /jenkins/ {
+        proxy_pass http://devopsclaw-jenkins:8080/jenkins/;
+
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_read_timeout 300;
+        proxy_connect_timeout 5;
+        proxy_send_timeout 90;
+
+        proxy_redirect default;
+        proxy_redirect http:// https://;
+    }
+}
+NGINXEOF
+        else
+            log_info "✓ jenkins.conf 已存在"
+        fi
+    else
+        log_info "- Jenkins 容器未运行，跳过"
+    fi
+
+    # 检测 GitLab
+    if docker ps --filter "name=devopsclaw-gitlab" --format "{{.Names}}" 2>/dev/null | grep -q .; then
+        log_info "✓ 检测到 GitLab 容器"
+        detected_services+=("gitlab")
+        port_map_args="$port_map_args -p ${NGINX_BIND}:${NGINX_PORT_GITLAB}:8441"
+
+        if [[ ! -f "$NGINX_CONF_D/gitlab.conf" ]]; then
+            log_info "创建 gitlab.conf..."
+            cat > "$NGINX_CONF_D/gitlab.conf" << 'NGINXEOF'
+server {
+    listen 8441 ssl;
+    listen [::]:8441 ssl;
+
+    server_name _;
+
+    ssl_certificate /etc/nginx/ssl/devopsclaw.crt;
+    ssl_certificate_key /etc/nginx/ssl/devopsclaw.key;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    client_max_body_size 100m;
+
+    location / {
+        proxy_pass http://devopsclaw-gitlab:80;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_read_timeout 300;
+        proxy_connect_timeout 5;
+        proxy_send_timeout 90;
+    }
+}
+NGINXEOF
+        else
+            log_info "✓ gitlab.conf 已存在"
+        fi
+    else
+        log_info "- GitLab 容器未运行，跳过"
+    fi
+
+    # 检测 OpenClaw
+    if docker ps --filter "name=devopsclaw-openclaw" --format "{{.Names}}" 2>/dev/null | grep -q .; then
+        log_info "✓ 检测到 OpenClaw 容器"
+        detected_services+=("openclaw")
+        port_map_args="$port_map_args -p ${NGINX_BIND}:${NGINX_PORT_OPENCLAW}:8442"
+
+        log_info "创建/更新 openclaw.conf（使用容器网络名 devopsclaw-openclaw:18789）..."
+        cat > "$NGINX_CONF_D/openclaw.conf" << 'NGINXEOF'
+server {
+    listen 8442 ssl;
+    listen [::]:8442 ssl;
+
+    server_name _;
+
+    ssl_certificate /etc/nginx/ssl/devopsclaw.crt;
+    ssl_certificate_key /etc/nginx/ssl/devopsclaw.key;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    location / {
+        proxy_pass http://devopsclaw-openclaw:18789;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_read_timeout 90;
+        proxy_connect_timeout 5;
+        proxy_send_timeout 90;
+    }
+}
+NGINXEOF
+    else
+        log_info "- OpenClaw 容器未运行，跳过"
+    fi
+
+    if [[ ${#detected_services[@]} -eq 0 ]]; then
+        log_error "未检测到任何后端服务容器"
+        log_info "请确保至少有一个后端服务正在运行（Jenkins / GitLab / OpenClaw）"
+        log_info "运行中的容器列表:"
+        docker ps --format "table {{.Names}}\t{{.Status}}" 2>/dev/null || true
+        exit 1
+    fi
+
+    # =========================================================================
+    # Phase 4: 启动 Nginx 容器
+    # =========================================================================
+    log_step "Phase 4: 启动 Nginx 容器"
+
+    local VOLUME_ARGS="-v $NGINX_CONF:/etc/nginx/nginx.conf:ro -v $NGINX_CONF_D:/etc/nginx/conf.d:ro -v $NGINX_SSL_DIR:/etc/nginx/ssl:ro"
+
+    echo "  检测到的服务: ${detected_services[*]}"
+    echo "  端口映射参数: $port_map_args"
+    echo ""
+
+    docker run -d \
+        --name "$NGINX_CONTAINER_NAME" \
+        --network devopsclaw-network \
+        --restart unless-stopped \
+        $VOLUME_ARGS \
+        $port_map_args \
+        "$NGINX_IMAGE" 2>/dev/null
+
+    sleep 3
+
+    if ! docker ps -q --filter "name=$NGINX_CONTAINER_NAME" 2>/dev/null | grep -q .; then
+        log_error "Nginx 容器启动失败"
+        log_info "查看日志: docker logs $NGINX_CONTAINER_NAME"
+        exit 1
+    fi
+
+    log_info "✓ Nginx 容器已启动"
+
+    # =========================================================================
+    # Phase 5: 验证 Nginx 配置
+    # =========================================================================
+    log_step "Phase 5: 验证 Nginx 配置"
+
+    if docker exec "$NGINX_CONTAINER_NAME" nginx -t 2>/dev/null; then
+        log_info "✓ Nginx 配置语法正确"
+        docker exec "$NGINX_CONTAINER_NAME" nginx -s reload 2>/dev/null
+        log_info "✓ Nginx 配置已重载"
+    else
+        log_warn "Nginx 配置语法错误，请检查日志"
+        log_info "查看错误详情: docker logs $NGINX_CONTAINER_NAME"
+    fi
+
+    # =========================================================================
+    # Phase 6: 输出摘要
+    # =========================================================================
+    echo
+    echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║              Nginx 反向代理部署完成                          ║${NC}"
+    echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
+    echo
+    echo -e "${BOLD}检测到的后端服务:${NC} ${detected_services[*]}"
+    echo
+    echo -e "${CYAN}【Nginx 反向代理访问地址 (HTTPS)】${NC}"
+    echo
+
+    for svc in "${detected_services[@]}"; do
+        case $svc in
+            jenkins)
+                echo -e "  ${BOLD}Jenkins:${NC}  ${CYAN}https://127.0.0.1:${NGINX_PORT_JENKINS}/jenkins/${NC}"
+                ;;
+            gitlab)
+                echo -e "  ${BOLD}GitLab:${NC}   ${CYAN}https://127.0.0.1:${NGINX_PORT_GITLAB}${NC}"
+                ;;
+            openclaw)
+                echo -e "  ${BOLD}OpenClaw:${NC} ${CYAN}https://127.0.0.1:${NGINX_PORT_OPENCLAW}${NC}"
+                ;;
+        esac
+    done
+
+    echo
+    echo -e "${YELLOW}【提示】${NC} 由于使用自签名证书，浏览器会显示 '不安全' 警告"
+    echo "       请点击 '高级' -> '继续前往' 即可继续使用"
+    echo
+    echo -e "${CYAN}【常用命令】${NC}"
+    echo "  查看 Nginx 日志:  docker logs -f $NGINX_CONTAINER_NAME"
+    echo "  重载 Nginx 配置: docker exec $NGINX_CONTAINER_NAME nginx -s reload"
+    echo "  停止 Nginx:      docker stop $NGINX_CONTAINER_NAME"
+    echo "  重启 Nginx:      docker restart $NGINX_CONTAINER_NAME"
     echo
     echo -e "${GREEN}════════════════════════════════════════════════════════════════${NC}"
 }
@@ -1052,6 +1385,13 @@ if [[ $# -gt 0 ]]; then
                 log_warn "建议使用 sudo 运行以确保权限"
             fi
             deploy_openclaw_standalone
+            exit 0
+            ;;
+        --deploy-nginx-standalone)
+            if [[ $EUID -ne 0 ]]; then
+                log_warn "建议使用 sudo 运行以确保权限"
+            fi
+            deploy_nginx_standalone
             exit 0
             ;;
         *)

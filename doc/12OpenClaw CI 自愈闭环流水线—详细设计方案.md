@@ -755,39 +755,424 @@ Push 到远程仓库
 
 ---
 
-## 附录 A：`openclaw-skill-ci-selfheal` 代码框架
+## 附录 A：`openclaw-skill-ci-selfheal` 详细设计分析
 
-> 本附录仅描述 Skill 的模块划分与职责，不涉及具体实现代码。
+> 本附录对 `openclaw-skill-ci-selfheal`（后续发布至 OpenClaw Hub）进行模块级设计分析。
+> 聚焦各模块的职责边界、数据流转、状态管理、与外部 Skill 的集成方式，不涉及具体实现代码。
+
+---
+
+### A.1 Skill 整体定位
+
+`openclaw-skill-ci-selfheal` 是整个 CI 自愈闭环流水线的**编排中枢**。它不是一个大而全的单体，而是一个"胶水层" Skill，核心职责是将 14 个已有 OpenClaw Skill 的能力串联成一条完整的闭环链路。
+
+**设计原则**：
+| 原则 | 说明 |
+|------|------|
+| 编排优先 | 不进 AI 不直接操作 CI 平台，核心能力通过已有 Skill 实现 |
+| 状态外置 | 自愈链路状态存于 `.self-heal-state.json`，断点可恢复 |
+| 只读约束 | JJB YAML 只读、不修改被分析项目的业务代码 |
+| 接口清晰 | 每个模块单一职责，输入/输出通过 dict 或文件传递 |
+| 可发布 | 符合 OpenClaw Skill 规范（`skill.toml` + `SKILL.md`），可一键安装 |
+
+---
+
+### A.2 目录结构与模块划分
 
 ```
 openclaw-skill-ci-selfheal/
 │
-├── SKILL.md                          # Skill 定义（触发条件 + 使用指南）
-├── skill.toml                        # OpenClaw 运行时 manifest
+├── SKILL.md                          # Skill 定义（触发条件 + 使用指南 + 依赖说明）
+├── skill.toml                        # OpenClaw 运行时 manifest（注册入口点与工具）
+├── LICENSE                           # 开源协议
 │
-├── scripts/                          # 核心脚本模块
-│   ├── orchestrator.py               # 闭环编排器（状态机 + 重试 + 决策）
-│   ├── webhook_listener.py           # HTTP 服务，接收 CI Webhook 通知
-│   ├── jjb_manager.py                # JJB YAML 只读管理 + Patch 文件生成
-│   └── ai_prompt_builder.py          # Prompt 组装器（上下文截断 + 脱敏）
+├── scripts/                          # 核心脚本模块（Python 实现）
+│   ├── __init__.py                   # 包初始化
+│   ├── orchestrator.py               # 主编排器 —— 闭环控制中枢
+│   ├── webhook_listener.py           # HTTP 入口 —— 接收外部 CI 平台通知
+│   ├── jjb_manager.py                # JJB YAML 管理器 —— 只读配置访问
+│   └── ai_prompt_builder.py          # Prompt 组装器 —— 上下文构造与截断
 │
 ├── bin/
-│   └── ci-selfheal                   # CLI 入口
+│   └── ci-selfheal                   # CLI 入口（Python，支持 orchestrate/status 子命令）
 │
-├── patches/                          # AI 生成的修复 Patch 文件（gitignore）
-├── reports/                          # 诊断报告（gitignore）
-├── requirements.txt
-└── README.md
+├── patches/                          # AI 生成的修复 Patch 文件（.groovy / .md）
+├── reports/                          # 诊断报告（.md）
+│
+├── requirements.txt                  # Python 依赖（pyyaml）
+└── README.md                         # 项目说明
 ```
 
-### 各模块职责说明
+---
 
-| 模块 | 职责 | 对应架构阶段 |
-|------|------|------------|
-| `orchestrator.py` | 主编排器，串联 G0→S1→G1→S2→S3→S4 全流程，管理状态机与重试 | 全局 |
-| `webhook_listener.py` | HTTP 入口，接收 Jenkins/GitHub/GitLab Webhook，解析事件参数 | G0 |
-| `jjb_manager.py` | 只读读取 JJB YAML，提取 DSL，生成标准 Unified Diff Patch | S1 / S3 |
-| `ai_prompt_builder.py` | 组装 AI Prompt，上下文截断、脱敏、历史模式注入 | S2 |
+### A.3 模块详细设计
+
+#### A.3.1 `skill.toml` —— Skill 注册清单
+
+`skill.toml` 是 OpenClaw Skill 的入口配置文件，定义了 Skill 的元信息与可调用工具。
+
+| 配置项 | 说明 |
+|--------|------|
+| `name` | `ci-selfheal`，作为 `openclaw ci-selfheal` 命令前缀 |
+| `version` | 语义化版本号，发布至 Hub 时递增 |
+| `description` | Skill 一句话描述，用于 Hub 展示 |
+| `tools.orchestrate` | 主编排入口，参数 `--job` + `--build` |
+| `tools.status` | 状态查询入口，参数 `--job`（可选） |
+| `tools.analyze` | 独立日志分析入口，参数 `--log`（可选） |
+
+**与已有 Skill 的依赖关系**（在 SKILL.md 中声明）：
+
+| 依赖 Skill | 用途 | 调用方式 |
+|-----------|------|---------|
+| `ci-monitor` + `jenkins` | 拉取构建日志与 Job 配置 | 编排器内通过 `openclaw` CLI 调用 |
+| `ci-cd-watchdog` | 日志预解析、根因定位 | 编排器内通过 `openclaw` CLI 调用 |
+| `cicd-pipeline` | CI/CD 流水线管理 | 编排器内通过 `openclaw` CLI 调用 |
+| `lint` + `security-auditor` | 修复代码质量与安全检查 | S3 阶段调用 |
+| `self-improve` + `capability-evolver-pro` | 失败模式记录与策略优化 | S4 阶段调用 |
+| `claw-summarize-pro` | 长日志摘要 | S1 阶段调用 |
+| `n8n` | 通知发送 | S3/S4 阶段调用 |
+
+---
+
+#### A.3.2 `SKILL.md` —— Skill 定义文件
+
+SKILL.md 是 OpenClaw Hub 的 Skill 首页文档，向用户说明 Skill 的功能、用法与配置。
+
+| 章节 | 内容要点 |
+|------|---------|
+| Description | CI 构建失败自动诊断→修复→重建的闭环自动化 |
+| Usage | `openclaw ci-selfheal orchestrate --job <job> --build <N>` |
+| Dependencies | 列出 9 个依赖 Skill（all installed in OpenClaw container） |
+| Configuration | 环境变量：`JENKINS_URL`、`JENKINS_USER`、`JENKINS_TOKEN`、`JJB_CONFIG_PATH`、`MAX_RETRY` |
+| State File | `.self-heal-state.json` 格式说明 |
+
+---
+
+#### A.3.3 `orchestrator.py` —— 主编排器设计
+
+**模块定位**：闭环控制中枢，串联 G0→S1→G1→S2→S3→S4 全流程，管理状态机与重试决策。
+
+**核心职责**：
+| 职责 | 说明 |
+|------|------|
+| 流程编排 | 按"安全门控 → 信息收集 → AI 诊断 → 决策分流 → 修复执行"顺序调度各模块 |
+| 状态机管理 | 读写 `.self-heal-state.json`，记录每个 Job 的重试次数、处理历史、当前状态 |
+| 去重守卫 | 同一 (Job + BuildNumber) 不重复处理（`processed_builds` 黑名单） |
+| 重试控制 | 超过 `MAX_RETRY`（默认 5 次）后进入熔断状态 |
+| 四分支决策 | 基于 Git 权限 X 错误类型 选路 |
+| 错误降级 | 各阶段异常不抛死，记录状态后继续或终止 |
+
+**状态机设计**（`.self-heal-state.json`）：
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  .self-heal-state.json                                   │
+│  {                                                        │
+│    "version": "5.0.0",                                    │
+│    "chains": {                                            │
+│      "<job-name>": {                                      │
+│        "current_retry": 0,        ← 当前重试次数          │
+│        "status": "idle|running|patch_ready|failed",       │
+│        "original_build": 42,      ← 触发构建号            │
+│        "processed_builds": [42],  ← 去重黑名单            │
+│        "history": [                ← 每轮操作记录         │
+│          {                                                │
+│            "round": 0,                                    │
+│            "timestamp": "2026-05-10T12:00:00Z",           │
+│            "result": "PATCH_GENERATED|FIX_APPLIED|...",   │
+│            "error": null                                  │
+│          }                                                │
+│        ]                                                  │
+│      }                                                    │
+│    }                                                      │
+│  }                                                        │
+└─────────────────────────────────────────────────────────┘
+```
+
+**状态流转**：
+
+| 当前状态 | 触发事件 | 下一状态 | 条件 |
+|---------|---------|---------|------|
+| idle | `run()` 调用 | running | 未超过 MAX_RETRY |
+| idle | `run()` 调用 | max_retry_exceeded | 超过 MAX_RETRY |
+| running | 修复成功 | patch_ready | PATCH_GENERATED / FIX_APPLIED |
+| running | 修复失败 | failed | CANNOT_FIX / PATCH_ONLY / ENV_ISSUE |
+| running | 任一阶段异常 | running（retry+1） | 未超过 MAX_RETRY |
+| max_retry_exceeded | — | 终止 | 人工介入 |
+
+**四分支决策逻辑**（在 `run()` 方法中）：
+
+```
+AI 诊断结果
+    │
+    ├─ CANNOT_FIX_SRC?  ──────────────▶ 终止，通知人工
+    │
+    ├─ 有 Git + 有写权限?  ────────────▶ _apply_fix_branch()
+    │   → 提取 DSL → 创建 fix 分支 → Commit → Push → 触发重建
+    │
+    ├─ 有 Git + 无权限?  ──────────────▶ _generate_patch_only()
+    │   → 生成诊断报告 + Patch → 通知维护者
+    │
+    ├─ 无 Git + 脚本错误?  ────────────▶ generate_patch()
+    │   → 生成 Patch 文件，人工手动应用
+    │
+    └─ 无 Git + 非脚本错误?  ──────────▶ _generate_diagnosis_report()
+        → 生成环境诊断报告 → 通知运维
+```
+
+**信息收集流程**（`collect_info()`）：
+
+```
+collect_info()
+    │
+    ├─ jenkins logs <job> --build <N>  ──▶ logs (raw text)
+    ├─ ci-cd-watchdog analyze --log -  ──▶ analysis (预解析)
+    ├─ _read_jjb_yaml()                ──▶ yaml_content (JJB 配置)
+    └─ git remote get-url origin       ──▶ git_remote (或 None)
+```
+
+**全局配置参数**（通过环境变量注入）：
+
+| 参数 | 环境变量 | 默认值 | 说明 |
+|------|---------|--------|------|
+| 最大重试次数 | `MAX_RETRY` | 5 | 单个 Job 最大重试数 |
+| JJB 配置路径 | `JJB_CONFIG_PATH` | `jjb-configs` | JJB YAML 文件目录 |
+| Slack 通知 | `SLACK_WEBHOOK_URL` | 空 | 不设置则跳过通知 |
+| N8N 工作流 | `N8N_API_URL` | 空 | 用于高级通知流 |
+
+---
+
+#### A.3.4 `webhook_listener.py` —— Webhook 入口设计
+
+**模块定位**：HTTP 服务，接收 Jenkins/GitLab CI/GitHub Actions 的构建失败通知，解析事件参数后交由编排器处理。
+
+**接口设计**：
+
+| 属性 | 设计 |
+|------|------|
+| 监听端口 | `BRIDGE_PORT` 环境变量，默认 5000 |
+| 接收路径 | `POST /webhook/jenkins` |
+| Content-Type | `application/json` |
+| 请求体 | `{"jobName": "...", "buildNumber": N, "status": "FAILURE"}` |
+| 过滤规则 | 仅处理 `status` 为 FAILURE/FAILED 的事件，其他状态返回 `skipped` |
+| 响应格式 | `{"status": "...", "reason": "...", ...}` 的 JSON |
+
+**与编排器的调用关系**：
+
+```
+外部 CI 平台
+  │ POST /webhook/jenkins
+  ▼
+WebhookHandler.do_POST()
+  │ 解析 jobName, buildNumber, status
+  │ 过滤: status ≠ FAILURE → 跳过
+  ▼
+CISelfHealOrchestrator(job_name, build_number)
+  │ .run()
+  │ 返回结果 JSON
+  ▼
+HTTP 200 + JSON 响应
+```
+
+---
+
+#### A.3.5 `jjb_manager.py` —— JJB YAML 管理器设计
+
+**模块定位**：Jenkins Job Builder（JJB）YAML 文件的只读管理器。为 AI 诊断提供 Pipeline DSL 上下文，**不修改** YAML 原文。
+
+**核心职责**：
+
+| 方法 | 职责 | 说明 |
+|------|------|------|
+| `read_job(job_name)` | 按名称读取 YAML 文件内容 | 先按文件名匹配，再按内容搜索 `name:` 字段 |
+| `extract_dsl(job_name)` | 从 YAML 中提取 DSL（Groovy script）部分 | 使用 `yaml.safe_load()` 解析后提取 `job.dsl` |
+| `validate_syntax(job_name)` | 校验 YAML 语法合法性 | 返回 `{"valid": True}` 或 `{"valid": False, "error": "..."}` |
+| `list_jobs()` | 列出所有可用的 JJB YAML 文件 | 扫描 `JJB_CONFIG_PATH` 目录 |
+
+**数据流向**：
+
+```
+JJB YAML 文件 (只读)
+  │ jjb_manager.read_job()
+  ▼
+yaml_content (文本)
+  │ orchestrator.collect_info()
+  ▼
+AI Prompt Builder (注入到 Prompt)
+  │ AI 诊断
+  ▼
+修复后的 DSL (AI 输出)
+  │ orchestrator._extract_dsl()
+  ▼
+Patch 文件 (patches/ 目录) —— 供人工审核后手动应用
+```
+
+---
+
+#### A.3.6 `ai_prompt_builder.py` —— Prompt 组装器设计
+
+**模块定位**：将收集到的多源上下文组装成发给 AI 模型的诊断 Prompt，包含截断策略与输出格式约束。
+
+**上下文组装策略**：
+
+| 上下文源 | 截断长度 | 优先级 | 说明 |
+|---------|---------|--------|------|
+| 构建日志 (logs) | 8000 字符 | 高（尾部优先） | 错误信息通常出现在日志尾部 |
+| Watchdog 分析 (analysis) | 4000 字符 | 高 | 预解析的根因分析结论 |
+| JJB YAML 配置 (yaml_content) | 4000 字符 | 中 | 提供流水线定义上下文 |
+| 历史失败模式 | —（后续版本） | 低 | 匹配历史相似失败，注入参考信息 |
+
+**Prompt 模板结构**：
+
+| 段落 | 内容 | 目的 |
+|------|------|------|
+| 系统角色 | "You are a CI/CD self-healing agent" | 设定 AI 行为模式 |
+| 上下文注入 | 构建日志 + Watchdog 分析 + JJB YAML | 提供诊断所需的全部信息 |
+| 任务指令 | 识别根因 → 生成修复 DSL → 判断是否 CANNOT_FIX_SRC | 明确输出目标 |
+| 约束条件 | 不修改 src/main/、不修改 YAML 文件、保持结构一致 | 安全边界 |
+| 输出格式 | 先说明根因 → 再提供 ` ```groovy ... ``` ` 代码块 | 结构化输出 |
+
+**Prompt 约束设计要点**：
+
+| 约束 | 理由 |
+|------|------|
+| 不修改业务代码（src/main/） | 避免 AI 误改业务逻辑 |
+| 只修复构建脚本/测试配置/Pipeline 定义 | 限定修复范围在 CI 配置层 |
+| 保持 Jenkinsfile 结构尽量不变 | 降低修复引入新问题的风险 |
+| CANNOT_FIX_SRC 信号 | 无法确定原因的明确标记，确保编排器终止当前流程 |
+| 输出仅含修复建议，不直接修改文件 | 人工审核 Gates，防止误操作 |
+
+---
+
+#### A.3.7 `bin/ci-selfheal` —— CLI 入口设计
+
+**模块定位**：面向运维人员的命令行入口，支持手动触发自愈流程和状态查询。
+
+**子命令设计**：
+
+| 子命令 | 参数 | 说明 |
+|--------|------|------|
+| `orchestrate` | `--job`（必填）、`--build`（必填） | 手动触发完整自愈流程 |
+| `status` | `--job`（可选） | 查询指定 Job 或全局的自愈状态 |
+
+**退出码约定**：
+
+| 退出码 | 含义 |
+|--------|------|
+| 0 | 自愈成功（状态为 PATCH_GENERATED） |
+| 1 | 自愈失败或被拦截 |
+
+**使用场景**：
+- Jenkins Post-Build 步骤中通过 HTTP 请求调用 Webhook（自动触发）
+- 运维人员手动排查，通过 CLI 补充触发（手动触发）
+- 定时巡检脚本中批量检查自愈状态（监控场景）
+
+---
+
+### A.4 数据流全景
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                     openclaw-skill-ci-selfheal 数据流                │
+└─────────────────────────────────────────────────────────────────────┘
+
+外部 CI Webhook
+    │ POST /webhook/jenkins
+    ▼
+webhook_listener.py ─── 解析 jobName, buildNumber, status
+    │
+    ▼
+orchestrator.py
+    │
+    ├──▶ G0: 白名单校验（gate/whitelist）—— 未实现，后续版本
+    │
+    ├──▶ S1: collect_info()
+    │       ├── jenkins logs ────────▶ logs (字符串)
+    │       ├── ci-cd-watchdog ──────▶ analysis (字符串)
+    │       ├── jjb_manager.read_job()▶ yaml_content (字符串)
+    │       └── git remote ──────────▶ git_remote (字符串 | None)
+    │
+    ├──▶ G1: 故障预判（gate/precheck）—— 未实现，后续版本
+    │
+    ├──▶ S2: diagnose(info)
+    │       ├── ai_prompt_builder.build(info) ──▶ prompt (字符串)
+    │       ├── openclaw agent --model deepseek ──▶ ai_response (字符串)
+    │       └── _extract_dsl(ai_response) ──▶ dsl (字符串 | None)
+    │
+    ├──▶ S3: 四分支决策
+    │       ├─ CANNOT_FIX_SRC?  ───▶ 终止
+    │       ├─ Git + 写权限?  ─────▶ _apply_fix_branch(dsl)
+    │       │   → git checkout -b → commit → push → trigger rebuild
+    │       ├─ Git + 无权限?  ─────▶ _generate_patch_only(dsl)
+    │       │   → patches/<job>_diagnosis_*.md
+    │       ├─ 无Git + 脚本?  ─────▶ generate_patch(dsl)
+    │       │   → patches/<job>_fix_*.groovy
+    │       └─ 无Git + 环境?  ─────▶ _generate_diagnosis_report(dsl)
+    │           → reports/<job>_env_diag_*.md
+    │
+    └──▶ update_status(result)
+            └──▶ .self-heal-state.json (状态持久化)
+```
+
+---
+
+### A.5 与核心架构的映射
+
+| 核心架构阶段 | ci-selfheal 模块 | 实现状态 |
+|------------|-----------------|---------|
+| G0 · 安全门控 | 调度 gate/whitelist.py（后续版本） | 🔜 待实现 |
+| G1 · 故障预判 | 调度 gate/precheck.py（后续版本） | 🔜 待实现 |
+| S1 · 信息收集 | orchestrator.collect_info() + jjb_manager | ✅ 已实现 |
+| S2 · AI 诊断 | orchestrator.diagnose() + ai_prompt_builder | ✅ 已实现 |
+| S3 · 修复决策 | orchestrator.run() 四分支决策逻辑 | ✅ 已实现 |
+| S4 · 验证闭环 | 调度 verifier/ 模块（后续版本） | 🔜 待实现 |
+| 底座 · 并发控制 | 调度 infra/lock.py（后续版本） | 🔜 待实现 |
+| 底座 · 审计日志 | 调度 infra/audit.py（后续版本） | 🔜 待实现 |
+| 底座 · 通知推送 | orchestrator._notify() | ✅ 已实现 |
+
+---
+
+### A.6 OpenClaw Hub 发布设计
+
+**发布流程**：
+
+| 步骤 | 说明 |
+|------|------|
+| 1. 版本管理 | 按语义化版本（SemVer）管理 `skill.toml` 中的 version 字段 |
+| 2. 目录规范 | 符合 OpenClaw Skill 标准目录结构（SKILL.md + skill.toml + scripts/） |
+| 3. 依赖声明 | SKILL.md 中列出所有前置 Skill，用户安装时可自动拉取 |
+| 4. 一键安装 | 用户通过 `openclaw skills install ci-selfheal` 即可安装 |
+| 5. 配置引导 | SKILL.md 提供所需环境变量的完整说明与新用户引导 |
+| 6. 版本发布 | 通过 Git Tag + GitHub Release 触发 OpenClaw Hub 索引更新 |
+
+**Skill 元信息清单**（发布时必须包含）：
+
+| 文件 | 必需 | 说明 |
+|------|------|------|
+| `SKILL.md` | ✅ | Skill 首页文档 |
+| `skill.toml` | ✅ | 运行时 manifest |
+| `requirements.txt` | ✅ | Python 依赖声明 |
+| `LICENSE` | ✅ | 开源协议 |
+| `README.md` | ✅ | 项目说明（仓库首页） |
+| `scripts/` | ✅ | 核心实现模块 |
+| `bin/` | ✅ | CLI 入口 |
+
+**发布后用户体验**：
+
+```bash
+# 安装
+openclaw skills install ci-selfheal
+
+# 配置
+export JENKINS_URL="https://..."
+export JENKINS_USER="admin"
+export JENKINS_TOKEN="..."
+export JJB_CONFIG_PATH="./jjb-configs"
+
+# 使用
+openclaw ci-selfheal orchestrate --job example-pipeline --build 42
+openclaw ci-selfheal status --job example-pipeline
+```
 
 ---
 

@@ -939,6 +939,371 @@ python tests/perf/test_concurrent.py
 
 ---
 
+---
+
+## Phase 5：`openclaw-skill-ci-selfheal` 模块化构建与 Hub 发布
+
+> **目标**: 按模块依赖顺序完成 Skill 的开发、测试、打包与 OpenClaw Hub 发布。  
+> **工期**: 3 天
+
+### Step 5.1：模块构建顺序与依赖关系
+
+各模块存在明确的依赖关系，必须按以下顺序构建：
+
+```
+                    ┌─────────────────┐
+                    │  skill.toml     │ ← ① 先定义 (Skill 元信息)
+                    │  SKILL.md       │
+                    └────────┬────────┘
+                             │
+              ┌──────────────┼──────────────┐
+              │              │              │
+              ▼              ▼              ▼
+    ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+    │ jjb_manager  │ │ai_prompt_    │ │webhook_      │
+    │ .py          │ │builder.py    │ │listener.py   │
+    │ ② 无外部依赖  │ │② 无外部依赖  │ │③ 依赖编排器   │
+    └──────┬───────┘ └──────┬───────┘ └──────┬───────┘
+           │                │                │
+           └────────┬───────┘                │
+                    │                        │
+                    ▼                        │
+          ┌──────────────┐                   │
+          │ orchestrator │ ← ④ 核心（依赖②的所有模块）
+          │ .py          │                   │
+          └──────┬───────┘                   │
+                 │                            │
+                 │        ┌───────────────────┘
+                 │        │
+                 ▼        ▼
+          ┌──────────────┐
+          │ bin/ci-self  │ ← ⑤ CLI 入口（依赖④）
+          │ heal         │
+          └──────┬───────┘
+                 │
+                 ▼
+          ┌──────────────┐
+          │ 集成测试 +    │ ← ⑥ 完整验证
+          │ Hub 发布      │
+          └──────────────┘
+```
+
+### Step 5.2：skill.toml 与 SKILL.md 构建
+
+**step 5.2.1 `skill.toml`**
+
+| 操作 | 说明 |
+|------|------|
+| `[skill]` 段 | 定义 `name = "ci-selfheal"`，`version` 按 SemVer 起始 `1.0.0` |
+| `[tools.orchestrate]` | 注册主编排入口，`entrypoint = "scripts/orchestrator.py"` |
+| `[tools.status]` | 注册状态查询入口，`entrypoint = "scripts/orchestrator.py"` |
+
+**验证**:
+```bash
+cat skill.toml
+# 确认 name、version、description 完整
+# 确认每个 [tools.*] 有 entrypoint 路径
+```
+
+**Step 5.2.2 `SKILL.md`**
+
+| 章节 | 必须内容 |
+|------|---------|
+| Description | 一句话概述 + 五步自愈流程说明 |
+| Dependencies | 列出 9 个依赖 Skill（→ OpenClaw Hub 自动解析依赖） |
+| Usage | `openclaw ci-selfheal orchestrate/status` 命令示例 |
+| Configuration | 必填环境变量表格（`JENKINS_URL`、`JENKINS_USER`、`JENKINS_TOKEN`、`JJB_CONFIG_PATH`） |
+| State File | `.self-heal-state.json` 位置与格式说明 |
+
+**验证**:
+```bash
+cat SKILL.md
+# 确认：Description / Dependencies / Usage / Configuration / State File 五个章节完整
+```
+
+---
+
+### Step 5.3：无依赖模块构建
+
+#### Step 5.3.1 `scripts/jjb_manager.py`
+
+| 方法 | 输入 | 输出 | 测试方法 |
+|------|------|------|---------|
+| `read_job(job_name)` | 字符串 | YAML 文本 | 准备测试 `.yaml` 文件，验证能按名称读出 |
+| `extract_dsl(job_name)` | 字符串 | DSL 文本 | 准备含 `dsl:` 字段的 YAML，验证提取内容 |
+| `validate_syntax(job_name)` | 字符串 | `{"valid": bool, ...}` | 分别用合法/非法 YAML 测试 |
+| `list_jobs()` | 无 | `[文件名列表]` | 准备测试目录，验证文件列表正确 |
+
+**测试场景**：
+- ✅ YAML 存在 → 返回完整内容
+- ✅ YAML 不存在 → 抛 `FileNotFoundError`
+- ✅ YAML 语法错误 → `validate_syntax` 返回 `valid: False`
+- ✅ 空的 JJB 配置目录 → `list_jobs` 返回空列表
+
+```bash
+python -c "
+from scripts.jjb_manager import JjbManager
+mgr = JjbManager('./jjb-configs')
+print(mgr.list_jobs())
+print(mgr.validate_syntax('<job-name>'))
+"
+```
+
+#### Step 5.3.2 `scripts/ai_prompt_builder.py`
+
+| 方法 | 输入 | 输出 | 测试方法 |
+|------|------|------|---------|
+| `build(info)` | `{"logs":..., "analysis":..., "yaml_content":...}` | Prompt 字符串 | 验证输出含系统角色 + 约束 + 上下文 |
+| `_truncate(text, max_len)` | 字符串 + 长度 | 截断字符串 | 分别测试超长/正常/空文本 |
+
+**Prompt 质量验证**（必须同时满足）：
+- [ ] 含系统角色声明（"CI/CD self-healing agent"）
+- [ ] 含 CANNOT_FIX_SRC 约束
+- [ ] 含不修改 src/main/ 约束  
+- [ ] 含输出格式要求（```groovy code block```）
+- [ ] 日志超 8000 字符时正确截断
+- [ ] 空数据源显示 `[No data available]`
+
+```bash
+python -c "
+from scripts.ai_prompt_builder import build_prompt
+prompt = build_prompt({
+    'logs': 'error: command not found',
+    'analysis': 'root cause: missing executable',
+    'yaml_content': 'job:\n  name: test'
+})
+assert 'CI/CD self-healing agent' in prompt
+assert 'CANNOT_FIX_SRC' in prompt
+print('✅ Prompt 结构验证通过')
+"
+```
+
+---
+
+### Step 5.4：核心编排模块构建
+
+#### Step 5.4.1 `scripts/orchestrator.py`
+
+| 方法 | 职责 | 测试方法 |
+|------|------|---------|
+| `load_state() / save_state()` | 状态持久化 | 空文件 → 返回默认结构；修改后保存 → 再次加载 → 修改生效 |
+| `get_chain()` | 获取/创建 Job 状态链 | 新 Job → 自动初始化；已存在 → 返回已有数据 |
+| `is_duplicate(build_number)` | 去重检查 | 第一次 → False；第二次 → True |
+| `collect_info()` | 多源上下文收集 | 需真实 Jenkins 环境 |
+| `diagnose(info)` | AI 诊断入口 | 需 DeepSeek 环境 |
+| `run()` | 全流程编排 | 端到端测试 |
+| `_extract_dsl(response)` | DSL 提取 | 模拟 AI 返回的 ```groovy ... ``` 块 |
+| `update_status(result)` | 状态更新 | 不同 result → 不同 status |
+
+**去重测试**:
+```bash
+python -c "
+from scripts.orchestrator import CISelfHealOrchestrator
+# 同一个 job+ build 调用两次
+o = CISelfHealOrchestrator('test-job', 42)
+assert o.is_duplicate(42) == False   # 第一次不重复
+assert o.is_duplicate(42) == True    # 第二次重复
+print('✅ 去重逻辑验证通过')
+"
+```
+
+**DSL 提取测试**:
+```bash
+python -c "
+from scripts.orchestrator import CISelfHealOrchestrator
+response = '''Root cause: missing semicolon
+\`\`\`groovy
+pipeline { stages { stage('build') { steps { sh 'make' } } } }
+\`\`\`'''
+dsl = CISelfHealOrchestrator._extract_dsl(response)
+assert 'pipeline' in dsl
+assert 'make' in dsl
+print('✅ DSL 提取验证通过')
+"
+```
+
+**状态流转测试**:
+```bash
+python -c "
+from scripts.orchestrator import CISelfHealOrchestrator
+o = CISelfHealOrchestrator('test-job', 1)
+# 测试 PATCH_GENERATED 状态
+o.update_status({'status': 'PATCH_GENERATED'})
+chain = o.get_chain()
+assert chain['status'] == 'patch_ready'
+# 测试 CANNOT_FIX 状态
+o.update_status({'status': 'CANNOT_FIX', 'reason': 'test'})
+chain = o.get_chain()
+assert chain['status'] == 'failed'
+print('✅ 状态流转验证通过')
+"
+```
+
+---
+
+### Step 5.5：HTTP 入口模块构建
+
+#### Step 5.5.1 `scripts/webhook_listener.py`
+
+| 测试场景 | 输入 | 预期 |
+|---------|------|------|
+| 正常失败事件 | `{"jobName":"test", "buildNumber":1, "status":"FAILURE"}` | 200 + JSON 结果 |
+| 非失败事件 | `{"jobName":"test", "buildNumber":1, "status":"SUCCESS"}` | 200 + `{"status":"skipped"}` |
+| 缺少参数 | `{"jobName":"test"}` | 200 + `{"status":"error"}` |
+| 错误路径 | POST 到 `/wrong-path` | 404 |
+
+```bash
+# 启动 Webhook Listener
+python scripts/webhook_listener.py &
+LISTENER_PID=$!
+
+# 测试正常流程（需提前设置环境变量）
+curl -X POST http://localhost:5000/webhook/jenkins \
+  -H "Content-Type: application/json" \
+  -d '{"jobName":"test-job","buildNumber":1,"status":"FAILURE"}'
+
+# 测试跳过非失败事件
+curl -X POST http://localhost:5000/webhook/jenkins \
+  -H "Content-Type: application/json" \
+  -d '{"jobName":"test-job","buildNumber":1,"status":"SUCCESS"}'
+
+kill $LISTENER_PID
+```
+
+---
+
+### Step 5.6：CLI 入口验证
+
+#### Step 5.6.1 `bin/ci-selfheal`
+
+```bash
+# 测试 orchestrate 子命令
+python bin/ci-selfheal orchestrate --job test-job --build 42
+
+# 测试 status 子命令（指定 job）
+python bin/ci-selfheal status --job test-job
+
+# 测试 status 子命令（全局）
+python bin/ci-selfheal status
+
+# 测试无参数（应显示帮助）
+python bin/ci-selfheal
+
+# 验证退出码
+echo $?  # orchestrate 成功 → 0，失败/拦截 → 1
+```
+
+---
+
+### Step 5.7：Skill 打包前检查清单
+
+在发布至 OpenClaw Hub 之前，必须逐项确认：
+
+| # | 检查项 | 验证方法 |
+|---|--------|---------|
+| 1 | `skill.toml` 中 `name`、`version`、`description` 完整 | `cat skill.toml` |
+| 2 | `skill.toml` 中每个 `[tools.*]` 都有 `entrypoint` | `cat skill.toml` |
+| 3 | `SKILL.md` 含 Dependencies 章节，列出所有依赖 Skill | `cat SKILL.md` |
+| 4 | `SKILL.md` 含 Configuration 章节，列出所有环境变量 | `cat SKILL.md` |
+| 5 | `requirements.txt` 包含所有 Python 依赖 | `cat requirements.txt` |
+| 6 | `LICENSE` 文件存在 | `cat LICENSE` |
+| 7 | `README.md` 含项目说明 | `cat README.md` |
+| 8 | `bin/ci-selfheal` 可执行权限正确 | `python bin/ci-selfheal --help` |
+| 9 | 无 Python 语法错误 | `python -m py_compile scripts/*.py` |
+| 10 | 去重逻辑正常 | 按 Step 5.4 测试 |
+| 11 | 状态流转正常 | 按 Step 5.4 测试 |
+| 12 | DSL 提取正常 | 按 Step 5.4 测试 |
+| 13 | Prompt 结构完整 | 按 Step 5.3 测试 |
+
+**一键验证脚本**:
+```bash
+#!/bin/bash
+ERRORS=0
+
+echo "=== openclaw-skill-ci-selfheal 发布前检查 ==="
+echo ""
+
+# 1. 必需文件检查
+for f in skill.toml SKILL.md requirements.txt LICENSE README.md bin/ci-selfheal; do
+  if [ -f "$f" ]; then echo "✅ $f 存在"; else echo "❌ $f 缺失"; ERRORS=$((ERRORS+1)); fi
+done
+
+# 2. Python 语法检查
+for f in scripts/*.py; do
+  python -m py_compile "$f" 2>/dev/null && echo "✅ $f 语法正确" || { echo "❌ $f 语法错误"; ERRORS=$((ERRORS+1)); }
+done
+
+# 3. CLI 可执行性
+python bin/ci-selfheal --help >/dev/null 2>&1 && echo "✅ CLI 入口正常" || { echo "❌ CLI 入口异常"; ERRORS=$((ERRORS+1)); }
+
+echo ""
+echo "=== 检查完成: $ERRORS 个错误 ==="
+```
+
+---
+
+### Step 5.8：OpenClaw Hub 发布步骤
+
+**发布流程**:
+
+| 步骤 | 操作 | 说明 |
+|------|------|------|
+| 1 | 版本号定稿 | 修改 `skill.toml` 中 `version`，如 `1.0.0` |
+| 2 | Git Tag | `git tag v1.0.0 && git push origin v1.0.0` |
+| 3 | GitHub Release | 基于 Tag 创建 Release，Release Notes 写清变更 |
+| 4 | Hub 索引更新 | OpenClaw Hub 自动检测新 Release 并更新索引（或手动提 PR 更新索引仓库） |
+| 5 | 安装验证 | 在全新 OpenClaw 环境中 `openclaw skills install ci-selfheal` 验证可安装 |
+
+**Release Notes 模板**:
+```markdown
+## v1.0.0 - Initial Release
+
+### Features
+- CI build failure auto-detection via webhook (Jenkins/GitLab CI/GitHub Actions)
+- Multi-source context collection (build logs + JJB YAML + watchdog analysis)
+- AI-powered root cause diagnosis (DeepSeek)
+- Four-branch decision matrix (auto-fix / patch / diagnose / CANNOT_FIX)
+- Patch file generation (Unified Diff format)
+- State machine with retry control and duplicate detection
+
+### Dependencies
+- ci-monitor, jenkins, ci-cd-watchdog, cicd-pipeline
+- claw-summarize-pro, lint, security-auditor
+- self-improve, capability-evolver-pro, n8n
+
+### Installation
+\`\`\`bash
+openclaw skills install ci-selfheal
+\`\`\`
+```
+
+**发布后验证**:
+```bash
+# 1. 全新环境中安装
+openclaw skills install ci-selfheal
+
+# 2. 确认依赖 Skill 已自动拉取
+ls /home/node/.openclaw/workspace/skills/
+
+# 3. 配置环境变量
+export JENKINS_URL="https://172.19.0.1:18440/jenkins"
+export JENKINS_USER="zx"
+export JENKINS_API_TOKEN="11e9fec81c11241d5a3897ab45608c6851"
+export NODE_TLS_REJECT_UNAUTHORIZED=0
+export JJB_CONFIG_PATH="./jjb-configs"
+
+# 4. 测试 CLI
+python bin/ci-selfheal --help
+
+# 5. 测试编排（需要真实 Jenkins Job）
+python bin/ci-selfheal orchestrate --job test-job --build 1
+
+# 6. 验证状态文件
+cat .self-heal-state.json | python -m json.tool
+```
+
+---
+
 ## 附录：快速命令参考
 
 ### 日常开发
