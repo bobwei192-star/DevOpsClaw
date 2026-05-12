@@ -330,3 +330,32 @@ Jenkins Webhook → webhook_listener.py
 落地顺序：先跑通 P0（一条命令式的 Agent 调用链路），再加固 P1/P2。
 
 验证方式：每步都能手动模拟 Webhook 后观察 Agent 输出和 GitLab 变化。
+
+六、同类 Skill 参考
+6.1 ClawHub 现有 DevOps 相关 Skill
+Skill	简介	与 ci-selfheal 的关系
+agentic-devops（tkuehnl）	CLI 工具箱：Docker 容器管理、进程检查、日志分析、HTTP 健康检查。纯 Python 标准库，零外部依赖。	互补关系。agentic-devops 提供通用运维诊断能力（查容器状态、找 CPU 占用进程、扫日志错误模式），ci-selfheal 在此基础上做 CI 构建失败的自动修复闭环。可以组合使用：用 agentic-devops 做系统级健康检查，用 ci-selfheal 做 Pipeline 级自愈。
+crash-fixer（ryce）	自主 Crash 分析和 Bug 修复	侧重点不同：crash-fixer 修应用运行时 Crash，ci-selfheal 修 CI 构建脚本失败
+solo-retro（fortunto2）	事后 Pipeline 复盘：解析日志、评分、建议补丁	最接近但不同：solo-retro 是事后复盘建议，ci-selfheal 是实时拦截 + 自动修复 + 重建验证闭环
+6.2 agentic-devops 详细分析
+安装方式：
+
+bash
+openclaw skills install tkuehnl/agentic-devops
+核心能力清单：
+
+功能	说明	ci-selfheal 是否已有
+Docker 容器管理	查看容器状态、重启、日志	部分（不直接管理 Docker）
+进程检查	找 CPU/内存占用最高的进程	❌ 没有
+日志分析	扫描错误模式、统计频率	部分（Jenkins 日志拉取 + AI 诊断）
+HTTP 健康检查	验证端点响应	✅ /health 端点
+系统快照	CPU、内存、磁盘、端口一次性快照	❌ 没有
+典型使用场景：
+
+# 部署后检查 Docker 容器健康
+# 找生产服务器上 CPU 最高的进程
+# 扫描应用日志中的错误模式
+# 值班前验证 HTTP 端点
+# 一条命令获取完整系统快照
+与 ci-selfheal 的组合建议：
+ci-selfheal 处理 Jenkins Pipeline 层面的失败（编译错误、Shell 语法、配置缺失），agentic-devops 处理基础设施层面的诊断（容器挂了、CPU 爆了、磁盘满了）。两者配合可以覆盖从基础设施到 CI Pipeline 的全栈自愈。

@@ -117,7 +117,26 @@ ls /home/node/.openclaw/workspace/skills/
 | `gitlab-skill` | Git 操作（分支/提交/MR） | ⚠️ 需安装 |
 | `n8n` | 通知推送 | ✅ 推荐 |
 
-### 1.6 安装 gitlab-skill（如未安装）
+### 1.6 推荐安装：agentic-devops（互补 Skill）
+
+`agentic-devops` 是 ClawHub 上的通用运维诊断工具箱（纯 Python 标准库，零外部依赖），与 `ci-selfheal` 互补：
+
+| 功能 | 用途 | ci-selfheal 覆盖? |
+|------|------|-----------------|
+| Docker 容器管理 | 查看容器状态、重启、日志 | 部分 |
+| 进程检查 | 找 CPU/内存最高的进程 | ❌ |
+| 日志分析 | 扫描错误模式、统计频率 | 部分（Jenkins 日志 + AI） |
+| HTTP 健康检查 | 验证端点响应 | ✅ /health |
+| 系统快照 | CPU、内存、磁盘、端口一次性快照 | ❌ |
+
+```bash
+docker exec -it devopsclaw-openclaw bash
+openclaw skills install tkuehnl/agentic-devops
+```
+
+> **组合建议**：`ci-selfheal` 处理 Jenkins Pipeline 层面的失败（编译错误、Shell 语法），`agentic-devops` 处理基础设施层面的诊断（容器挂了、CPU 爆了）。两者配合覆盖从基础设施到 CI Pipeline 的全栈自愈。
+
+### 1.7 安装 gitlab-skill（如未安装）
 
 > ⚠️ **注意**：以下命令都在**容器内**执行。所有 `openclaw` 命令如果在宿主机跑会连到另一套环境（宿主机没有安装这些 Skill）。
 
@@ -144,7 +163,7 @@ export GITLAB_TOKEN="glpat-imZiYsNETLhKnLsIsOkEwG86MQp1OnoH.01.0w0rr1066"
 openclaw agent --agent main --message "使用 gitlab-skill 在仓库 root/model_test 列出所有分支" --json
 ```
 
-### 1.7 确认 AI 模型可用
+### 1.8 确认 AI 模型可用
 
 ```bash
 openclaw agent --agent main --message "Hello, 1+1=?" --json
@@ -156,7 +175,7 @@ openclaw agent --agent main --message "Hello, 1+1=?" --json
 - 报 `401 Unauthorized` → API Key 过期或余额不足
 - 报 `timeout` → 网络不通，检查容器能否访问 `api.deepseek.com`
 
-> ✅ **1.1 ~ 1.7 全部通过后，进入第 2 章。**
+> ✅ **1.1 ~ 1.8 全部通过后，进入第 2 章。**
 
 ---
 
