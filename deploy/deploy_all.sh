@@ -63,6 +63,9 @@ NGINX_DEPLOY_SCRIPT="$PROJECT_ROOT/deploy_nginx/deploy_nginx.sh"
 OPENCLAW_CONTAINER_NAME="${OPENCLAW_CONTAINER_NAME:-devopsclaw-openclaw}"
 NGINX_CONTAINER_NAME="${NGINX_CONTAINER_NAME:-devopsclaw-nginx}"
 
+# Nginx 共享状态（ensure_nginx_proxy 填充）
+declare -a NGINX_DETECTED_SERVICES=()
+
 # 端口配置
 PORTS=(
     "OpenClaw:18789"
@@ -146,6 +149,8 @@ show_help() {
     echo "  --list-openclaw-devices       列出 OpenClaw 待配对设备"
     echo "  --approve-openclaw-device     批准 OpenClaw 设备配对（需要 UUID 参数）"
     echo "  --deploy-openclaw-standalone  一键部署/修复 OpenClaw（清数据+生成Token+部署+配置Nginx）"
+    echo "  --deploy-jenkins-standalone   一键部署/修复 Jenkins（部署+自动配置Nginx反向代理）"
+    echo "  --deploy-gitlab-standalone    一键部署/修复 GitLab（部署+自动配置Nginx反向代理）"
     echo "  --deploy-nginx-standalone    一键部署/修复 Nginx（自动检测后端服务+配置反向代理）"
     echo
     echo -e "${BLUE}示例:${NC}"
@@ -153,6 +158,8 @@ show_help() {
     echo "  sudo ./deploy_all.sh --get-jenkins-password      # 获取 Jenkins 密码"
     echo "  sudo ./deploy_all.sh --get-gitlab-password       # 获取 GitLab 密码"
     echo "  sudo ./deploy_all.sh --deploy-openclaw-standalone  # 一键部署/修复 OpenClaw"
+    echo "  sudo ./deploy_all.sh --deploy-jenkins-standalone   # 一键部署/修复 Jenkins"
+    echo "  sudo ./deploy_all.sh --deploy-gitlab-standalone    # 一键部署/修复 GitLab"
     echo "  sudo ./deploy_all.sh --deploy-nginx-standalone    # 一键部署/修复 Nginx"
     echo "  sudo ./deploy_all.sh --reset-openclaw-device     # 重置 OpenClaw 设备"
     echo "  sudo ./deploy_all.sh --list-openclaw-devices     # 列出待配对设备"
@@ -229,16 +236,6 @@ approve_openclaw_device() {
 }
 
 deploy_openclaw_standalone() {
-    local COMPOSE_CMD=""
-    if command -v docker-compose &>/dev/null; then
-        COMPOSE_CMD="docker-compose"
-    elif docker compose version &>/dev/null 2>&1; then
-        COMPOSE_CMD="docker compose"
-    else
-        log_error "docker-compose 未安装"
-        exit 1
-    fi
-
     log_banner
     log_step "OpenClaw 一键部署/修复"
 
@@ -400,103 +397,11 @@ INNEREOF" 2>/dev/null && log_info "✓ openclaw.json 已写入数据卷（含 to
     log_info "设备初始化完成"
 
     # =========================================================================
-    # Phase 6: 检查并修复 Nginx OpenClaw 转发
+    # Phase 6: Nginx 反向代理集成
     # =========================================================================
-    log_step "Phase 6: 检查 Nginx OpenClaw 转发"
+    log_step "Phase 6: Nginx 反向代理集成"
 
-    local NGINX_CONTAINER="$NGINX_CONTAINER_NAME"
-    local NGINX_OPENCLAW_CONF="$PROJECT_ROOT/deploy_nginx/nginx/conf.d/openclaw.conf"
-
-    if docker ps -q --filter "name=$NGINX_CONTAINER" 2>/dev/null | grep -q .; then
-        log_info "Nginx 容器正在运行"
-
-        local has_openclaw_map=""
-        has_openclaw_map=$(docker port "$NGINX_CONTAINER" 8442 2>/dev/null | head -1 || echo "")
-        if [[ -z "$has_openclaw_map" ]]; then
-            log_warn "未检测到 18442→8442 端口映射，正在重建 Nginx 容器..."
-
-            local EXISTING_PORTS=""
-            EXISTING_PORTS=$(docker inspect "$NGINX_CONTAINER" --format '{{range $p,$c := .HostConfig.PortBindings}}{{$p}}{{"\n"}}{{end}}' 2>/dev/null)
-            local PORT_ARGS=""
-            while IFS= read -r port_line; do
-                [[ -z "$port_line" ]] && continue
-                local host_binding=""
-                host_binding=$(docker port "$NGINX_CONTAINER" "${port_line%/*}" 2>/dev/null | head -1 | awk '{print $3}' || echo "")
-                if [[ -z "$host_binding" ]]; then
-                    host_binding="${port_line%%/*}"
-                fi
-                PORT_ARGS="$PORT_ARGS -p ${host_binding}:${port_line%/*}/${port_line##*/}"
-            done <<< "$EXISTING_PORTS"
-
-            local VOLUME_ARGS=""
-            VOLUME_ARGS=$(docker inspect "$NGINX_CONTAINER" --format '{{range .Mounts}}-v {{.Source}}:{{.Destination}}:ro {{end}}' 2>/dev/null || echo "")
-
-            if [[ -z "$VOLUME_ARGS" ]]; then
-                VOLUME_ARGS="-v $PROJECT_ROOT/deploy_nginx/nginx/nginx.conf:/etc/nginx/nginx.conf:ro -v $PROJECT_ROOT/deploy_nginx/nginx/conf.d:/etc/nginx/conf.d:ro -v $PROJECT_ROOT/deploy_nginx/nginx/ssl:/etc/nginx/ssl:ro"
-            fi
-
-            docker stop "$NGINX_CONTAINER" 2>/dev/null || true
-            docker rm -f "$NGINX_CONTAINER" 2>/dev/null || true
-
-            docker run -d \
-                --name "$NGINX_CONTAINER" \
-                --network devopsclaw-network \
-                --restart unless-stopped \
-                $VOLUME_ARGS \
-                $PORT_ARGS \
-                -p 127.0.0.1:18442:8442 \
-                nginx:alpine 2>/dev/null && log_info "✓ Nginx 容器已重建（含 OpenClaw 端口）" || log_warn "Nginx 容器重建失败"
-        else
-            log_info "✓ 18442→8442 端口映射已存在"
-        fi
-
-        if [[ -f "$NGINX_OPENCLAW_CONF" ]]; then
-            log_info "✓ openclaw.conf 配置文件存在"
-        else
-            log_warn "openclaw.conf 不存在，正在创建..."
-            cat > "$NGINX_OPENCLAW_CONF" << 'NGINXEOF'
-server {
-    listen 8442 ssl;
-    listen [::]:8442 ssl;
-
-    server_name _;
-
-    ssl_certificate /etc/nginx/ssl/devopsclaw.crt;
-    ssl_certificate_key /etc/nginx/ssl/devopsclaw.key;
-
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
-    ssl_prefer_server_ciphers on;
-    ssl_session_cache shared:SSL:10m;
-    ssl_session_timeout 10m;
-
-    location / {
-        proxy_pass http://devopsclaw-openclaw:18789;
-        proxy_set_header Host $http_host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_read_timeout 90;
-        proxy_connect_timeout 5;
-        proxy_send_timeout 90;
-    }
-}
-NGINXEOF
-            log_info "✓ openclaw.conf 已创建"
-        fi
-
-        if docker exec "$NGINX_CONTAINER" nginx -t 2>/dev/null; then
-            docker exec "$NGINX_CONTAINER" nginx -s reload 2>/dev/null
-            log_info "✓ Nginx 配置已重载"
-        else
-            log_warn "Nginx 配置语法错误，跳过重载"
-        fi
-    else
-        log_warn "Nginx 容器未运行，跳过 Nginx 检查"
-        log_info "如需 Nginx 代理，请部署后运行: sudo $NGINX_DEPLOY_SCRIPT --deploy"
-    fi
+    ensure_nginx_proxy
 
     # =========================================================================
     # Phase 7: 输出摘要
@@ -529,12 +434,11 @@ NGINXEOF
 }
 
 # =============================================================================
-# Nginx 一键部署/修复函数
+# Nginx 共享核心函数（被 deploy_nginx_standalone 和各 standalone 函数调用）
+# 职责: 清理→证书→检测服务→创建conf→启动Nginx→验证
+# 结果: 设置全局 NGINX_DETECTED_SERVICES 数组
 # =============================================================================
-deploy_nginx_standalone() {
-    log_banner
-    log_step "Nginx 一键部署/修复"
-
+ensure_nginx_proxy() {
     local NGINX_CONF_DIR="$PROJECT_ROOT/deploy_nginx/nginx"
     local NGINX_SSL_DIR="$NGINX_CONF_DIR/ssl"
     local NGINX_CONF_D="$NGINX_CONF_DIR/conf.d"
@@ -546,25 +450,16 @@ deploy_nginx_standalone() {
     local NGINX_PORT_OPENCLAW="${NGINX_PORT_OPENCLAW:-18442}"
     local NGINX_BIND="${NGINX_BIND:-127.0.0.1}"
 
-    # =========================================================================
-    # Phase 1: 清理旧容器
-    # =========================================================================
-    log_step "Phase 1: 清理旧 Nginx 容器"
-
+    # 清理旧容器
+    log_info "清理旧 Nginx 容器（如存在）..."
     if docker ps -q --filter "name=$NGINX_CONTAINER_NAME" 2>/dev/null | grep -q .; then
-        log_info "停止旧 Nginx 容器..."
         docker stop "$NGINX_CONTAINER_NAME" 2>/dev/null || true
     fi
     if docker ps -aq --filter "name=$NGINX_CONTAINER_NAME" 2>/dev/null | grep -q .; then
-        log_info "删除旧 Nginx 容器..."
         docker rm -f "$NGINX_CONTAINER_NAME" 2>/dev/null || true
     fi
 
-    # =========================================================================
-    # Phase 2: 确保 SSL 证书存在
-    # =========================================================================
-    log_step "Phase 2: 检查并生成 SSL 证书"
-
+    # SSL 证书
     if [[ ! -d "$NGINX_SSL_DIR" ]]; then
         mkdir -p "$NGINX_SSL_DIR"
     fi
@@ -585,10 +480,8 @@ deploy_nginx_standalone() {
             exit 1
         fi
         log_info "部分 SSL 证书缺失，正在生成自签名证书..."
-
         for name in "${cert_names[@]}"; do
             if [[ -f "$NGINX_SSL_DIR/$name.crt" && -f "$NGINX_SSL_DIR/$name.key" ]]; then
-                log_info "跳过已存在的证书: $name"
                 continue
             fi
             openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
@@ -603,11 +496,7 @@ deploy_nginx_standalone() {
         log_info "✓ 所有 SSL 证书已存在"
     fi
 
-    # =========================================================================
-    # Phase 3: 检测后端服务并确保 Nginx 配置文件存在
-    # =========================================================================
-    log_step "Phase 3: 检测后端服务并准备 Nginx 配置"
-
+    # 检测后端服务并确保配置文件存在
     if [[ ! -d "$NGINX_CONF_D" ]]; then
         mkdir -p "$NGINX_CONF_D"
     fi
@@ -725,13 +614,13 @@ NGINXEOF
         log_info "- GitLab 容器未运行，跳过"
     fi
 
-    # 检测 OpenClaw
+    # 检测 OpenClaw（始终覆盖 openclaw.conf，确保 proxy_pass 指向容器名）
     if docker ps --filter "name=devopsclaw-openclaw" --format "{{.Names}}" 2>/dev/null | grep -q .; then
         log_info "✓ 检测到 OpenClaw 容器"
         detected_services+=("openclaw")
         port_map_args="$port_map_args -p ${NGINX_BIND}:${NGINX_PORT_OPENCLAW}:8442"
 
-        log_info "创建/更新 openclaw.conf（使用容器网络名 devopsclaw-openclaw:18789）..."
+        log_info "创建/更新 openclaw.conf..."
         cat > "$NGINX_CONF_D/openclaw.conf" << 'NGINXEOF'
 server {
     listen 8442 ssl;
@@ -776,15 +665,13 @@ NGINXEOF
         exit 1
     fi
 
-    # =========================================================================
-    # Phase 4: 启动 Nginx 容器
-    # =========================================================================
-    log_step "Phase 4: 启动 Nginx 容器"
+    # 保存到全局变量
+    NGINX_DETECTED_SERVICES=("${detected_services[@]}")
 
+    # 启动 Nginx 容器
     local VOLUME_ARGS="-v $NGINX_CONF:/etc/nginx/nginx.conf:ro -v $NGINX_CONF_D:/etc/nginx/conf.d:ro -v $NGINX_SSL_DIR:/etc/nginx/ssl:ro"
 
     echo "  检测到的服务: ${detected_services[*]}"
-    echo "  端口映射参数: $port_map_args"
     echo ""
 
     docker run -d \
@@ -805,11 +692,7 @@ NGINXEOF
 
     log_info "✓ Nginx 容器已启动"
 
-    # =========================================================================
-    # Phase 5: 验证 Nginx 配置
-    # =========================================================================
-    log_step "Phase 5: 验证 Nginx 配置"
-
+    # 验证配置
     if docker exec "$NGINX_CONTAINER_NAME" nginx -t 2>/dev/null; then
         log_info "✓ Nginx 配置语法正确"
         docker exec "$NGINX_CONTAINER_NAME" nginx -s reload 2>/dev/null
@@ -818,30 +701,37 @@ NGINXEOF
         log_warn "Nginx 配置语法错误，请检查日志"
         log_info "查看错误详情: docker logs $NGINX_CONTAINER_NAME"
     fi
+}
 
-    # =========================================================================
-    # Phase 6: 输出摘要
-    # =========================================================================
+# =============================================================================
+# Nginx 一键部署/修复函数
+# =============================================================================
+deploy_nginx_standalone() {
+    log_banner
+    log_step "Nginx 一键部署/修复"
+
+    ensure_nginx_proxy
+
     echo
     echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${GREEN}║              Nginx 反向代理部署完成                          ║${NC}"
     echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo
-    echo -e "${BOLD}检测到的后端服务:${NC} ${detected_services[*]}"
+    echo -e "${BOLD}检测到的后端服务:${NC} ${NGINX_DETECTED_SERVICES[*]}"
     echo
     echo -e "${CYAN}【Nginx 反向代理访问地址 (HTTPS)】${NC}"
     echo
 
-    for svc in "${detected_services[@]}"; do
+    for svc in "${NGINX_DETECTED_SERVICES[@]}"; do
         case $svc in
             jenkins)
-                echo -e "  ${BOLD}Jenkins:${NC}  ${CYAN}https://127.0.0.1:${NGINX_PORT_JENKINS}/jenkins/${NC}"
+                echo -e "  ${BOLD}Jenkins:${NC}  ${CYAN}https://127.0.0.1:${NGINX_PORT_JENKINS:-18440}/jenkins/${NC}"
                 ;;
             gitlab)
-                echo -e "  ${BOLD}GitLab:${NC}   ${CYAN}https://127.0.0.1:${NGINX_PORT_GITLAB}${NC}"
+                echo -e "  ${BOLD}GitLab:${NC}   ${CYAN}https://127.0.0.1:${NGINX_PORT_GITLAB:-18441}${NC}"
                 ;;
             openclaw)
-                echo -e "  ${BOLD}OpenClaw:${NC} ${CYAN}https://127.0.0.1:${NGINX_PORT_OPENCLAW}${NC}"
+                echo -e "  ${BOLD}OpenClaw:${NC} ${CYAN}https://127.0.0.1:${NGINX_PORT_OPENCLAW:-18442}${NC}"
                 ;;
         esac
     done
@@ -857,6 +747,42 @@ NGINXEOF
     echo "  重启 Nginx:      docker restart $NGINX_CONTAINER_NAME"
     echo
     echo -e "${GREEN}════════════════════════════════════════════════════════════════${NC}"
+}
+
+# =============================================================================
+# Jenkins 一键部署/修复函数
+# =============================================================================
+deploy_jenkins_standalone() {
+    log_banner
+    log_step "Jenkins 一键部署/修复"
+
+    if [[ -x "$JENKINS_DEPLOY_SCRIPT" ]]; then
+        "$JENKINS_DEPLOY_SCRIPT" --standalone
+    else
+        log_error "Jenkins 部署脚本不存在: $JENKINS_DEPLOY_SCRIPT"
+        exit 1
+    fi
+
+    log_step "Nginx 反向代理集成"
+    ensure_nginx_proxy
+}
+
+# =============================================================================
+# GitLab 一键部署/修复函数
+# =============================================================================
+deploy_gitlab_standalone() {
+    log_banner
+    log_step "GitLab 一键部署/修复"
+
+    if [[ -x "$GITLAB_DEPLOY_SCRIPT" ]]; then
+        "$GITLAB_DEPLOY_SCRIPT" --standalone
+    else
+        log_error "GitLab 部署脚本不存在: $GITLAB_DEPLOY_SCRIPT"
+        exit 1
+    fi
+
+    log_step "Nginx 反向代理集成"
+    ensure_nginx_proxy
 }
 
 # =============================================================================
@@ -1339,6 +1265,7 @@ trap 'log_warn "脚本被用户中断"; exit 1' INT TERM
 # =============================================================================
 # 命令行参数解析
 # =============================================================================
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 if [[ $# -gt 0 ]]; then
     case "$1" in
         -h|--help)
@@ -1394,6 +1321,20 @@ if [[ $# -gt 0 ]]; then
             deploy_nginx_standalone
             exit 0
             ;;
+        --deploy-jenkins-standalone)
+            if [[ $EUID -ne 0 ]]; then
+                log_warn "建议使用 sudo 运行以确保权限"
+            fi
+            deploy_jenkins_standalone
+            exit 0
+            ;;
+        --deploy-gitlab-standalone)
+            if [[ $EUID -ne 0 ]]; then
+                log_warn "建议使用 sudo 运行以确保权限"
+            fi
+            deploy_gitlab_standalone
+            exit 0
+            ;;
         *)
             log_error "未知选项: $1"
             echo
@@ -1405,3 +1346,4 @@ fi
 
 # 执行主函数
 main "$@"
+fi

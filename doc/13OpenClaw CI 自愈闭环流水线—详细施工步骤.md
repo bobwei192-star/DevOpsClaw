@@ -86,7 +86,7 @@ node ${baseDir}/scripts/jenkins.mjs console --job "example_fauliure_job" --last 
 ```bash
 # 在容器内执行
 # 1. 设置 GitLab Token 变量（替换为你的实际 Token）
-export GITLAB_TOKEN="glpat-imZiYsNETLhKnLsIsOkEwG86MQp1OnoH.01.0w0rr1066"
+export GITLAB_TOKEN="glpat-86x2pYV78K_2MMCZXc9RE286MQp1OjEH.01.0w1fpvejn"
 
 # 2. 测试 GitLab API 连通性（使用 Docker 网关 IP，不是 127.0.0.1）
 curl -k -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \

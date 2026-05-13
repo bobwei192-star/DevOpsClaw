@@ -67,18 +67,18 @@ openclaw --version
 
 | 容器 | 内网 IP | 端口 | 说明 |
 |------|---------|------|------|
-| `devopsclaw-nginx` | `172.19.0.5` | `8440`→Jenkins、`8441`→GitLab、`8442`→OpenClaw | **容器间通信的统一入口** |
-| `devopsclaw-jenkins` | `172.19.0.4` | `8080` | Jenkins 内部 HTTP |
-| `devopsclaw-gitlab` | `172.19.0.3` | `80` | GitLab 内部 HTTP |
+| `devopsclaw-nginx` | DNS 名 `devopsclaw-nginx` | `8440`→Jenkins、`8441`→GitLab、`8442`→OpenClaw | **容器间通信的统一入口** |
+| `devopsclaw-jenkins` | 容器名 `devopsclaw-jenkins` | `8080` | Jenkins 内部 HTTP |
+| `devopsclaw-gitlab` | 容器名 `devopsclaw-gitlab` | `80` | GitLab 内部 HTTP |
 | `devopsclaw-openclaw` | `172.19.0.3`（可能漂移） | `18789` | OpenClaw API |
 
-> ⚠️ **重要**：容器间通信走 nginx HTTPS（`172.19.0.5:844x`），**不要用** `172.19.0.1:184xx`（那是宿主机网关，WSL 重启后偶发不通）。
+> ⚠️ **重要**：容器间通信走 nginx HTTPS（`devopsclaw-nginx:844x`），**用 Docker DNS 名而非 IP**（容器重建后 IP 会变，DNS 名不变）。**不要用** `172.19.0.1:184xx`（那是宿主机网关，WSL 重启后偶发不通）。
 
 ### 1.4 确认 Jenkins 连通性（通过 nginx HTTPS）
 
 ```bash
 baseDir="/home/node/.openclaw/workspace/skills/jenkins"
-export JENKINS_URL="https://172.19.0.5:8440/jenkins"
+export JENKINS_URL="https://devopsclaw-nginx:8440/jenkins"
 export JENKINS_USER="zx"
 export JENKINS_API_TOKEN="11e9fec81c11241d5a3897ab45608c6851"
 export NODE_TLS_REJECT_UNAUTHORIZED=0
@@ -91,10 +91,10 @@ node ${baseDir}/scripts/jenkins.mjs jobs
 ### 1.5 确认 GitLab 连通性（通过 nginx HTTPS）
 
 ```bash
-export GITLAB_TOKEN="glpat-imZiYsNETLhKnLsIsOkEwG86MQp1OnoH.01.0w0rr1066"
+export GITLAB_TOKEN="glpat-86x2pYV78K_2MMCZXc9RE286MQp1OjEH.01.0w1fpvejn"
 
 curl -k -s -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-  "https://172.19.0.5:8441/api/v4/user"
+  "https://devopsclaw-nginx:8441/api/v4/user"
 ```
 
 **预期输出**：返回用户信息 JSON（含 `id`、`username`、`name` 等）。
@@ -136,7 +136,7 @@ openclaw skills install tkuehnl/agentic-devops
 
 > **组合建议**：`ci-selfheal` 处理 Jenkins Pipeline 层面的失败（编译错误、Shell 语法），`agentic-devops` 处理基础设施层面的诊断（容器挂了、CPU 爆了）。两者配合覆盖从基础设施到 CI Pipeline 的全栈自愈。
 
-### 1.7 安装 gitlab-skill（如未安装）
+### 1.7 安装 gitlab-skill + 凭据配置（实测有效方案）
 
 > ⚠️ **注意**：以下命令都在**容器内**执行。所有 `openclaw` 命令如果在宿主机跑会连到另一套环境（宿主机没有安装这些 Skill）。
 
@@ -145,23 +145,63 @@ docker exec -it devopsclaw-openclaw bash
 openclaw skills install gitlab-skill
 ```
 
-**配置 gitlab-skill 的认证信息**（在容器内执行）：
+**Step 1：创建 `~/.claude/gitlab_config.json`（这是 gitlab-skill 真正读取的凭据文件）**：
+
+> 实测发现当前版本 gitlab-skill **不读环境变量**，必须写 `~/.claude/gitlab_config.json`。
 
 ```bash
-export GITLAB_HOST="https://172.19.0.5:8441"
-export GITLAB_TOKEN="glpat-imZiYsNETLhKnLsIsOkEwG86MQp1OnoH.01.0w0rr1066"
+mkdir -p ~/.claude
+cat > ~/.claude/gitlab_config.json << 'EOF'
+{
+  "host": "https://devopsclaw-nginx:8441",
+  "access_token": "glpat-86x2pYV78K_2MMCZXc9RE286MQp1OjEH.01.0w1fpvejn"
+}
+EOF
+chmod 600 ~/.claude/gitlab_config.json
 ```
 
-> 如果不知道 gitlab-skill 需要的环境变量名，可以先查看它的 SKILL.md：
-> ```bash
-> cat /home/node/.openclaw/workspace/skills/gitlab-skill/SKILL.md | head -30
-> ```
+> **不同环境对应不同的 `host` 值**：
+> - 本地 Docker 环境：`"host": "https://devopsclaw-nginx:8441"`
+> - 跨主机直连 GitLab：`"host": "http://10.67.167.53:8088"`
 
-**验证 gitlab-skill 可用**（在容器内执行）：
+**Step 2：验证分支创建能力（gitlab-skill CLI）**：
 
 ```bash
-openclaw agent --agent main --message "使用 gitlab-skill 在仓库 root/model_test 列出所有分支" --json
+python3 /home/node/.openclaw/workspace/skills/gitlab-skill/scripts/gitlab_api.py projects --search test
+python3 /home/node/.openclaw/workspace/skills/gitlab-skill/scripts/gitlab_api.py create-branch \
+  --project "root/model_test" \
+  --branch "test-branch-cli" \
+  --branch-ref "main"
 ```
+
+**预期输出**：返回分支 URL。
+
+**Step 3：验证 MR 创建能力（直接 GitLab REST API——因 gitlab-skill 的 MR 功能在当前环境下不稳定）**：
+
+先获取项目 ID：
+
+```bash
+GITLAB_TOKEN="glpat-imZiYsNETLhKnLsIsOkEwG86MQp1OnoH.01.0w0rr1066"
+curl -s -k --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+  "https://devopsclaw-nginx:8441/api/v4/projects?search=model_test" \
+  | python3 -m json.tool | grep -B 2 '"path_with_namespace"' | head -5
+```
+
+然后创建 MR：
+
+```bash
+PROJECT_ID="<上一步获取的 ID>"
+curl -s -k -X POST "https://devopsclaw-nginx:8441/api/v4/projects/${PROJECT_ID}/merge_requests" \
+  --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+  --data-urlencode "source_branch=test-branch-cli" \
+  --data-urlencode "target_branch=main" \
+  --data-urlencode "title=测试MR-通过API" \
+  --data-urlencode "description=验证 GitLab API 创建 MR"
+```
+
+**预期输出**：MR JSON 含 `web_url` 和 `reference`（如 `!5`）。
+
+> 📚 详细实测过程见 [gitlab-skill 凭据配置与 MR 能力实测](../doc/issue/gitlab-skill%20凭据配置与%20MR%20能力实测.md)。
 
 ### 1.8 确认 AI 模型可用
 
@@ -321,14 +361,15 @@ PYTHONPATH="/tmp/selfheal-deps:$(pwd)" python3 -m py_compile scripts/webhook_lis
 ```yaml
 # ===== Jenkins 连接 =====
 jenkins:
-  url: "https://172.19.0.5:8440/jenkins" # ← nginx → Jenkins（容器直连，不走宿主机网关）
-  user: "zx"                              # ← 你的 Jenkins 用户名
-  token_env: "JENKINS_API_TOKEN_1"        # ← 环境变量名（运行时注入，不写死 token）
+  url_env: "JENKINS_URL"               # ← 从环境变量 JENKINS_URL 读取
+  user_env: "JENKINS_USER"              # ← 从环境变量 JENKINS_USER 读取
+  token_env: "JENKINS_API_TOKEN"        # ← 从环境变量 JENKINS_API_TOKEN 读取
 
 # ===== GitLab 连接 =====
 gitlab:
-  url: "https://172.19.0.5:8441"         # ← nginx → GitLab（容器直连，不走宿主机网关）
-  token_env: "GITLAB_TOKEN"              # ← 环境变量名
+  url: "https://devopsclaw-nginx:8441"        # ← nginx → GitLab（容器 DNS 名，重建不变）
+  token_env: "GITLAB_TOKEN"             # ← 环境变量名
+  host_env: "GITLAB_HOST"               # ← GitLab 地址环境变量名
 
 # ===== 自愈参数 =====
 repair:
@@ -341,11 +382,11 @@ whitelist:
   repos:                                  # 允许自愈的仓库路径
     - "root/model_test"
     - "group/backend-api"
-  branch_pattern: "^(feat|fix|dev|feature)(/.*)?$"  # 允许的分支名正则（/.* 可选）
+    - "ci/gitlab_repo_example"
+  branch_pattern: "^(feat|fix|dev|feature|main)(/.*)?$"  # 允许的分支名正则（/.* 可选）
   protected_branches:                     # 禁止自愈的分支
-    - "main"
-    - "master"
-    - "release/*"
+      - "master"
+      - "release/*"
 
 # ===== 通知 =====
 notify:
@@ -354,8 +395,8 @@ notify:
 
 ### 4.2 配置说明
 
-- **Jenkins URL**：`https://172.19.0.5:8440/jenkins` 是通过 nginx 容器反向代理到 Jenkins。`172.19.0.5` 是 nginx 容器在 Docker 内网的 IP，只要容器不重建就不会变。
-- **Token 不写死**：`token_env` 指向环境变量名，实际值在 `.env` 文件中注入，防止 token 泄露到代码仓库。
+- **Jenkins 三要素全部从环境变量读取**：`JENKINS_URL`、`JENKINS_USER`、`JENKINS_API_TOKEN` 统一在 `.env` 中管理，`config.yaml` 只声明 `url_env`/`user_env`/`token_env` 指向哪个环境变量名。这样切换 Jenkins 实例只需改 `.env`，无需动 `config.yaml`。
+- **Token 不写死**：所有敏感信息通过环境变量注入，防止泄露到代码仓库。
 
 ### 4.3 设置环境变量
 
@@ -363,10 +404,13 @@ notify:
 
 ```bash
 cat > /home/node/.openclaw/workspace/skills/ci-selfheal/.env << 'EOF'
-# ===== Jenkins Token =====
-export JENKINS_API_TOKEN_1="11e9fec81c11241d5a3897ab45608c6851"
+# ===== Jenkins 连接（全部从环境变量读取） =====
+export JENKINS_URL="https://devopsclaw-nginx:8440/jenkins"
+export JENKINS_USER="zx"
+export JENKINS_API_TOKEN="11e9fec81c11241d5a3897ab45608c6851"
 
-# ===== GitLab Token =====
+# ===== GitLab 连接 =====
+export GITLAB_HOST="https://devopsclaw-nginx:8441"
 export GITLAB_TOKEN="glpat-imZiYsNETLhKnLsIsOkEwG86MQp1OnoH.01.0w0rr1066"
 
 # ===== 可选：钉钉通知 =====
@@ -423,7 +467,7 @@ print(json.dumps(result, indent=2, ensure_ascii=False))
 ### 5.3 测试：GitLab 操作
 
 ```bash
-export GITLAB_HOST="https://172.19.0.5:8441"
+export GITLAB_HOST="https://devopsclaw-nginx:8441"
 export GITLAB_TOKEN="glpat-imZiYsNETLhKnLsIsOkEwG86MQp1OnoH.01.0w0rr1066"
 
 openclaw agent --agent main --message "使用 gitlab-skill 在仓库 root/model_test 列出所有分支" --json
@@ -435,7 +479,7 @@ openclaw agent --agent main --message "使用 gitlab-skill 在仓库 root/model_
 
 ```bash
 baseDir="/home/node/.openclaw/workspace/skills/jenkins"
-export JENKINS_URL="https://172.19.0.5:8440/jenkins"
+export JENKINS_URL="https://devopsclaw-nginx:8440/jenkins"
 export JENKINS_USER="zx"
 export JENKINS_API_TOKEN="11e9fec81c11241d5a3897ab45608c6851"
 export NODE_TLS_REJECT_UNAUTHORIZED=0
@@ -556,11 +600,11 @@ EOF
 
 | 目标服务 | 容器内访问地址 | 验证结果 |
 |---------|---------------|---------|
-| **Jenkins API** | `https://172.19.0.5:8440/jenkins/api/json` | ✅ 403（需 API Token） |
+| **Jenkins API** | `https://devopsclaw-nginx:8440/jenkins/api/json` | ✅ 403（需 API Token） |
 | **Jenkins Skill** | `node jenkins.mjs jobs`（URL=同上） | ✅ 返回 Job 列表 |
-| **GitLab API** | `https://172.19.0.5:8441/api/v4/user` | ✅ 401（Token 需确认） |
+| **GitLab API** | `https://devopsclaw-nginx:8441/api/v4/user` | ✅ 401（Token 需确认） |
 
-> 这些地址走 nginx 容器直连（172.19.0.5），**不使用**宿主机网关（172.19.0.1:184xx），避免了 WSL 重启后 NAT 端口转发偶发失效的问题。
+> 这些地址走 nginx 容器 DNS 名（devopsclaw-nginx），**不使用**宿主机网关（172.19.0.1:184xx），容器重建后 IP 自动更新。
 
 ### 7.2 确认 OpenClaw 容器的 IP
 
@@ -719,7 +763,7 @@ tail -f /home/node/.openclaw/workspace/skills/ci-selfheal/selfheal.log
 | 现象 | 可能原因 | 排查命令 |
 |------|---------|---------|
 | `No module named 'yaml'` | 依赖未安装 | `ls /tmp/selfheal-deps/` 看有没有 `yaml/` |
-| `jenkins.mjs` 报 `ECONNREFUSED` | 用了宿主机网关 IP | 改用 nginx 容器直连 `https://172.19.0.5:8440/jenkins`，详见 [容器间通信必须经过nginx-HTTPS](../doc/issue/容器间通信必须经过nginx-HTTPS.md) |
+| `jenkins.mjs` 报 `ECONNREFUSED` | 用了宿主机网关 IP | 改用 nginx 容器 DNS 名 `https://devopsclaw-nginx:8440/jenkins`，详见 [容器间通信必须经过nginx-HTTPS](../doc/issue/容器间通信必须经过nginx-HTTPS.md) |
 | Agent 调用超时 | 日志太长或网络慢 | 减小 `poll_interval_sec`，日志只拉最后 200 行 |
 | Agent 返回非 JSON | Agent 输出了额外文本 | 检查 `agent_wrapper.py` 的 JSON 提取逻辑 |
 | GitLab 操作报 `401` | Token 过期或权限不足 | `curl -H "PRIVATE-TOKEN: $GITLAB_TOKEN" https://.../user` |

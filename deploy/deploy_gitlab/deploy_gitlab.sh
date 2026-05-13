@@ -395,6 +395,7 @@ show_help() {
     echo -e "选项:"
     echo -e "  ${CYAN}-h, --help${NC}              显示此帮助信息"
     echo -e "  ${CYAN}--deploy${NC}                部署 GitLab 服务 (默认)"
+    echo -e "  ${CYAN}--standalone${NC}             独立部署 GitLab（含 Nginx 访问地址摘要）"
     echo -e "  ${CYAN}--get-password${NC}          获取 GitLab 初始密码"
     echo -e "  ${CYAN}--status${NC}                查看 GitLab 服务状态"
     echo -e "  ${CYAN}--stop${NC}                  停止 GitLab 服务"
@@ -476,6 +477,10 @@ main() {
                 action="restart"
                 shift
                 ;;
+            --standalone)
+                action="standalone"
+                shift
+                ;;
             *)
                 log_warn "未知参数: $1"
                 show_help
@@ -522,6 +527,16 @@ main() {
             log_step "重启 GitLab 服务"
             docker restart "$GITLAB_CONTAINER_NAME" 2>/dev/null
             log_info "GitLab 已重启"
+            ;;
+        standalone)
+            check_root
+            check_docker
+            if [[ -f "$PROJECT_DIR/.env" ]]; then
+                load_env "$PROJECT_DIR/.env"
+            fi
+            deploy_gitlab
+            print_gitlab_summary "with_nginx"
+            log_info "GitLab 独立部署完成"
             ;;
     esac
 }

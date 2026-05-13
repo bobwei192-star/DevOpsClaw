@@ -1,0 +1,57 @@
+pipeline {
+    agent any
+
+    stages {
+        stage('检出代码') {
+            steps {
+                git branch: 'main',
+                    url: 'http://oauth2:glpat-86x2pYV78K_2MMCZXc9RE286MQp1OjEH.01.0w1fpvejn@devopsclaw-gitlab:80/ci/gitlab_repo_example.git'
+            }
+        }
+
+        stage('检查环境') {
+            steps {
+                echo '开始执行流水线...'
+                sh 'pwd'
+                sh 'ls -la'
+            }
+        }
+
+        stage('运行测试') {
+            steps {
+                echo '执行功能测试脚本...'
+                sh 'chmod +x test_function.sh && bash test_function.sh'
+            }
+        }
+    }
+
+    post {
+        failure {
+            echo '流水线执行失败！'
+            echo '失败原因：test_function.sh 存在 Shell 语法错误（缺少 fi）'
+
+            script {
+                def jobName = env.JOB_NAME.replaceAll('%2F', '/')
+                def payload = [
+                    job: jobName,
+                    build: env.BUILD_NUMBER,
+                    status: 'FAILURE',
+                    branch: env.GIT_BRANCH ?: 'main',
+                    repo: 'ci/gitlab_repo_example'
+                ]
+                httpRequest(
+                    url: 'http://devopsclaw-openclaw:8080/webhook/ci-failure',
+                    httpMode: 'POST',
+                    contentType: 'APPLICATION_JSON',
+                    requestBody: groovy.json.JsonOutput.toJson(payload),
+                    timeout: 10,
+                    authentication: ''
+                )
+            }
+        }
+
+        always {
+            echo '流水线执行完毕（成功或失败都会执行）'
+        }
+    }
+}

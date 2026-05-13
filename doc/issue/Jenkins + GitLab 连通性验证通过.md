@@ -63,7 +63,7 @@ node ${baseDir}/scripts/jenkins.mjs console --job "<name>" --last --tail 50
 node ${baseDir}/scripts/jenkins.mjs build --job "<name>"
 GitLab API 调用方式
 bash
-TOKEN="glpat-imZiYsNETLhKnLsIsOkEwG86MQp1OnoH.01.0w0rr1066"
+TOKEN="glpat-86x2pYV78K_2MMCZXc9RE286MQp1OjEH.01.0w1fpvejn"
 
 # 获取用户信息
 curl -k -H "PRIVATE-TOKEN: $TOKEN" "https://172.19.0.1:18441/api/v4/user"

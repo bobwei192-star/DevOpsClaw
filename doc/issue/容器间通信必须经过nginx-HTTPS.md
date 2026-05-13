@@ -159,7 +159,7 @@ node ${baseDir}/scripts/jenkins.mjs jobs
 ```bash
 echo "========== GitLab 连通性 =========="
 
-GITLAB_TOKEN="glpat-imZiYsNETLhKnLsIsOkEwG86MQp1OnoH.01.0w0rr1066"
+GITLAB_TOKEN="glpat-86x2pYV78K_2MMCZXc9RE286MQp1OjEH.01.0w1fpvejn"
 
 echo "--- 路径 A: 宿主机网关 ---"
 curl -k -s -o /dev/null -w "172.19.0.1:18441 → HTTP %{http_code}\n" -H "PRIVATE-TOKEN: $GITLAB_TOKEN" https://172.19.0.1:18441/api/v4/user || echo "  ❌ 不通"
