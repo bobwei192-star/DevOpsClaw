@@ -56,3 +56,63 @@ Jenkins 成功通知被误判为新失败；
 
 一句话总结
 Jenkins 失败 → OpenClaw 接管 → 自修后自己触发构建 → 自己轮询结果 → 成功立即提 MR。Jenkins 全程只当工具，不参与决策。
+
+---
+
+## 并发保护：BUILD_TYPE 参数（无锁设计）
+
+### 问题
+
+OpenClaw 触发验证构建后，若验证构建也失败，Jenkins `post { failure }` 会二次发送 webhook，导致同一 Job 上出现两个并行的修复进程：
+
+```
+Build #34 失败 → Webhook → 修复进程-A 启动 → 触发 Build #35 → 轮询 #35
+                                                        ↓
+Build #35 失败 → Jenkins post-failure 发 Webhook → 修复进程-B 启动
+                                                        ↓
+                              修复进程-A 还在轮询 #35！两进程并行操作同一个 Job！
+```
+
+### 解决方案：让 Jenkins 区分构建类型（零依赖、零状态）
+
+思路：不是处理竞态，而是消灭竞态——不该有第二次通知。
+
+**Jenkinsfile：**
+
+```groovy
+pipeline {
+    parameters {
+        choice(name: 'BUILD_TYPE', choices: ['normal', 'selfheal'])
+    }
+    post {
+        failure {
+            script {
+                if (params.BUILD_TYPE == 'normal') {
+                    // 只有初始构建失败才发 Webhook
+                    sh "curl -X POST .../webhook/ci-failure ..."
+                }
+                // BUILD_TYPE=selfheal 时 Jenkins 沉默，OpenClaw 自己轮询
+            }
+        }
+    }
+}
+```
+
+**orchestrator.py：**
+
+```python
+def _trigger_build(self, job_name, branch):
+    cmd = ["node", "jenkins.mjs", "build", "--job", job_name,
+           "--param", "BUILD_TYPE=selfheal"]  # ← 自愈构建带此参数
+```
+
+### 为什么这比锁方案更好
+
+| 对比维度 | 文件锁 / 运行锁 | BUILD_TYPE 参数 |
+|---|---|---|
+| 处理方式 | 被动防守（拦截重复 webhook） | 主动消灭（不发重复 webhook） |
+| 状态管理 | 需要 running_since、managed_builds、死锁检测 | 零状态 |
+| 代码量 | +46 行锁管理 | 2 行 Jenkins + 1 行 Python |
+| Skill 无状态 | 依赖 .self-heal-state.json | 完全无状态 |
+| Hub 发布 | 用户需理解锁机制 | 一行参数说明即上手 |
+| 健壮性 | 并发读可能绕过锁 | 不会有重复 webhook |

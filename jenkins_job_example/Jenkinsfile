@@ -1,6 +1,10 @@
 pipeline {
     agent any
 
+    parameters {
+        choice(name: 'BUILD_TYPE', choices: ['normal', 'selfheal'], description: '构建类型: normal=初始构建, selfheal=自愈验证构建')
+    }
+
     stages {
         stage('检出代码') {
             steps {
@@ -26,19 +30,31 @@ pipeline {
     }
 
     post {
-        failure {
-            echo '流水线执行失败！'
-            echo '失败原因：test_function.sh 存在 Shell 语法错误（缺少 fi）'
+    failure {
+        echo '流水线执行失败！'
 
-            script {
+        script {
+            if (params.BUILD_TYPE == 'normal') {
                 def jobName = env.JOB_NAME.replaceAll('%2F', '/')
-                def payload = /{"job":"${jobName}","build":"${env.BUILD_NUMBER}","status":"FAILURE","branch":"${env.GIT_BRANCH ?: 'main'}","repo":"ci/gitlab_repo_example"}/
+                def payload = """
+                    {
+                        "job": "${jobName}",
+                        "build": "${env.BUILD_NUMBER}",
+                        "status": "FAILURE",
+                        "branch": "${env.GIT_BRANCH ?: 'main'}",
+                        "repo": "ci/gitlab_repo_example"
+                    }
+                """.stripIndent().replaceAll('\n', ' ').trim()
+                
                 sh "curl -s -X POST http://devopsclaw-openclaw:8080/webhook/ci-failure -H 'Content-Type: application/json' -d '${payload}'"
+            } else {
+                echo "自愈验证构建失败，跳过 webhook（BUILD_TYPE=selfheal，由 OpenClaw 轮询）"
             }
         }
-
-        always {
-            echo '流水线执行完毕（成功或失败都会执行）'
-        }
     }
+
+    always {
+        echo '流水线执行完毕（成功或失败都会执行）'
+    }
+}
 }

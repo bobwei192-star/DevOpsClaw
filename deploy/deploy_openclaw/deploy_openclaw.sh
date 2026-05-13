@@ -26,113 +26,7 @@ LIB_DIR="$PROJECT_DIR/lib"
 DEPLOY_LOG="${PROJECT_DIR}/deploy.log"
 DOCKER_COMPOSE_CMD=""
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-PURPLE='\033[0;35m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m'
-
-log_info() {
-    local msg="$1"
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    if [[ -n "$DEPLOY_LOG" ]]; then
-        echo -e "${GREEN}[INFO]${NC} $timestamp - $msg" | tee -a "$DEPLOY_LOG"
-    else
-        echo -e "${GREEN}[INFO]${NC} $timestamp - $msg"
-    fi
-}
-
-log_warn() {
-    local msg="$1"
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    if [[ -n "$DEPLOY_LOG" ]]; then
-        echo -e "${YELLOW}[WARN]${NC} $timestamp - $msg" | tee -a "$DEPLOY_LOG"
-    else
-        echo -e "${YELLOW}[WARN]${NC} $timestamp - $msg"
-    fi
-}
-
-log_error() {
-    local msg="$1"
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    if [[ -n "$DEPLOY_LOG" ]]; then
-        echo -e "${RED}[ERROR]${NC} $timestamp - $msg" | tee -a "$DEPLOY_LOG"
-    else
-        echo -e "${RED}[ERROR]${NC} $timestamp - $msg"
-    fi
-}
-
-log_step() {
-    local msg="$1"
-    echo -e "\n${BLUE}=== $msg ===${NC}"
-}
-
-log_banner() {
-    echo -e "${PURPLE}"
-    cat << 'EOF'
-  ____             ____  _             ____ _                    
- |  _ \  _____   _/ ___|| | _____     / ___| | __ ___      ____
- | | | |/ _ \ \ / /\___ \| |/ _ \ \   / /   | |/ _` \ \ /\ / /
- | |_| |  __/\ V /  ___) | | (_) \ \_/ /    | | (_| |\ V  V / 
- |____/ \___| \_/  |____/|_|\___/ \___/     |_|\__,_| \_/\_/  
-                                                                   
-EOF
-    echo -e "${NC}"
-}
-
-check_root() {
-    if [[ $EUID -ne 0 ]]; then
-        log_error "此脚本需要 root 权限运行"
-        log_info "请使用: sudo $0"
-        exit 1
-    fi
-}
-
-check_docker() {
-    log_step "检查 Docker 环境"
-    
-    if ! command -v docker &>/dev/null; then
-        log_error "Docker 未安装"
-        log_info "请先运行: $PROJECT_DIR/deploy_docker/install_docker.sh"
-        exit 1
-    fi
-    
-    log_info "Docker 已安装: $(docker --version)"
-    
-    if docker compose version &>/dev/null; then
-        DOCKER_COMPOSE_CMD="docker compose"
-        log_info "Docker Compose (plugin) 已安装"
-    elif command -v docker-compose &>/dev/null; then
-        DOCKER_COMPOSE_CMD="docker-compose"
-        log_info "Docker Compose (standalone) 已安装"
-    else
-        log_error "Docker Compose 未安装"
-        exit 1
-    fi
-}
-
-load_env() {
-    local env_file="$1"
-    
-    if [[ -f "$env_file" ]]; then
-        log_info "加载环境变量: $env_file"
-        
-        while IFS= read -r line; do
-            if [[ "$line" =~ ^[A-Z_]+= ]]; then
-                var_name="${line%%=*}"
-                var_value="${line#*=}"
-                var_value="${var_value//\"/}"
-                var_value="${var_value//\'/}"
-                export "$var_name"="$var_value"
-            fi
-        done < "$env_file"
-    else
-        log_warn "环境变量文件不存在: $env_file"
-    fi
-}
+source "$LIB_DIR/common.sh"
 
 OPENCLAW_PORT_WEB="${OPENCLAW_PORT_WEB:-18789}"
 OPENCLAW_PORT_AGENT="${OPENCLAW_PORT_AGENT:-8080}"
@@ -460,6 +354,180 @@ console.log('allowedOrigins + allowInsecureAuth configured at: ' + configPath);
     echo
 }
 
+ENV_FILE="${PROJECT_DIR}/.env"
+ENV_EXAMPLE="${PROJECT_DIR}/.env.example"
+
+generate_token() {
+    local token
+    if command -v openssl &>/dev/null; then
+        token=$(openssl rand -hex 32)
+    elif command -v date &>/dev/null && command -v sha256sum &>/dev/null; then
+        token=$(date +%s%N | sha256sum | awk '{print $1}')
+    else
+        token="devopsclaw_$(date +%s)"
+    fi
+    echo "$token"
+}
+
+deploy_openclaw_standalone() {
+    log_step "Phase 1: 清理旧容器和数据卷"
+
+    if docker ps -q --filter "name=$OPENCLAW_CONTAINER_NAME" 2>/dev/null | grep -q .; then
+        log_info "停止旧 OpenClaw 容器..."
+        docker stop "$OPENCLAW_CONTAINER_NAME" 2>/dev/null || true
+    fi
+    if docker ps -aq --filter "name=$OPENCLAW_CONTAINER_NAME" 2>/dev/null | grep -q .; then
+        log_info "删除旧 OpenClaw 容器..."
+        docker rm -f "$OPENCLAW_CONTAINER_NAME" 2>/dev/null || true
+    fi
+
+    local VOLUME_NAME="devopsclaw_openclaw-data"
+    if docker volume ls -q --filter "name=$VOLUME_NAME" 2>/dev/null | grep -q .; then
+        log_info "清空数据卷: $VOLUME_NAME"
+        docker run --rm -v "${VOLUME_NAME}:/data" alpine sh -c "rm -rf /data/* /data/.[!.]* /data/..?* 2>/dev/null; echo '已清空'" 2>/dev/null || true
+    fi
+
+    log_step "Phase 2: 生成 Gateway Token"
+
+    local token
+    token=$(generate_token)
+
+    OPENCLAW_TOKEN="$token"
+    echo "$token" > "$OPENCLAW_TOKEN_FILE"
+    chmod 600 "$OPENCLAW_TOKEN_FILE"
+    log_info "Token 已保存到: $OPENCLAW_TOKEN_FILE"
+
+    if [[ -f "$ENV_FILE" ]]; then
+        if grep -q "^OPENCLAW_GATEWAY_TOKEN=your_secure_gateway_token_here" "$ENV_FILE" 2>/dev/null; then
+            sed -i "s/^OPENCLAW_GATEWAY_TOKEN=your_secure_gateway_token_here$/OPENCLAW_GATEWAY_TOKEN=$token/" "$ENV_FILE"
+            log_info "已替换 .env 中的占位 Token"
+        elif grep -q "^OPENCLAW_GATEWAY_TOKEN=" "$ENV_FILE" 2>/dev/null; then
+            sed -i "s/^OPENCLAW_GATEWAY_TOKEN=.*$/OPENCLAW_GATEWAY_TOKEN=$token/" "$ENV_FILE"
+            log_info "已更新 .env 中的 Token"
+        else
+            echo "OPENCLAW_GATEWAY_TOKEN=$token" >> "$ENV_FILE"
+            log_info "已追加 Token 到 .env"
+        fi
+    else
+        cp "$ENV_EXAMPLE" "$ENV_FILE"
+        sed -i "s/^OPENCLAW_GATEWAY_TOKEN=your_secure_gateway_token_here$/OPENCLAW_GATEWAY_TOKEN=$token/" "$ENV_FILE"
+        log_info "已创建 .env 并写入 Token"
+    fi
+
+    echo -e "\n${BOLD}${CYAN}══════════════════════════════════════════════════${NC}"
+    echo -e "${BOLD}${CYAN}  你的 Gateway Token（请复制保存）：${NC}"
+    echo -e "${BOLD}${YELLOW}  $token${NC}"
+    echo -e "${BOLD}${CYAN}══════════════════════════════════════════════════${NC}\n"
+
+    log_step "Phase 3: 预写入 openclaw.json 到数据卷"
+
+    docker run --rm -v "${VOLUME_NAME}:/data" alpine sh -c "cat > /data/openclaw.json << 'INNEREOF'
+{
+  \"gateway\": {
+    \"mode\": \"local\",
+    \"auth\": {
+      \"token\": \"$token\"
+    },
+    \"controlUi\": {
+      \"allowedOrigins\": [
+        \"http://127.0.0.1:18789\",
+        \"http://localhost:18789\",
+        \"https://127.0.0.1:18442\",
+        \"https://localhost:18442\"
+      ]
+    },
+    \"trustedProxies\": [
+      \"127.0.0.1\",
+      \"::1\",
+      \"172.16.0.0/12\",
+      \"10.0.0.0/8\",
+      \"192.168.0.0/16\"
+    ]
+  }
+}
+INNEREOF" 2>/dev/null && log_info "✓ openclaw.json 已写入数据卷（含 token 认证 + mode=local）" || log_warn "openclaw.json 写入失败"
+
+    log_step "Phase 4: 部署 OpenClaw 容器（token 认证模式）"
+
+    local OPENCLAW_IMAGE="${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}"
+    local OPENCLAW_PORT="${OPENCLAW_PORT:-18789}"
+    local OPENCLAW_BIND="${OPENCLAW_BIND:-127.0.0.1}"
+
+    log_info "镜像: $OPENCLAW_IMAGE"
+    log_info "端口: $OPENCLAW_BIND:$OPENCLAW_PORT"
+
+    docker run -d \
+        --name "$OPENCLAW_CONTAINER_NAME" \
+        --network devopsclaw-network \
+        --restart unless-stopped \
+        --user "1000:1000" \
+        --cap-drop=ALL \
+        --security-opt=no-new-privileges \
+        --read-only \
+        --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+        -p "${OPENCLAW_BIND}:${OPENCLAW_PORT}:18789" \
+        -v "${VOLUME_NAME}:/home/node/.openclaw" \
+        -e "OPENCLAW_GATEWAY_TOKEN=$token" \
+        -e "LOG_LEVEL=${LOG_LEVEL:-INFO}" \
+        -e "TZ=Asia/Shanghai" \
+        "$OPENCLAW_IMAGE" \
+        node openclaw.mjs gateway --bind lan 2>/dev/null
+
+    log_info "等待容器启动（最多 90 秒）..."
+    local waited=0
+    while [[ $waited -lt 90 ]]; do
+        if docker ps --filter "name=$OPENCLAW_CONTAINER_NAME" --format "{{.Status}}" 2>/dev/null | grep -q "Up"; then
+            sleep 3
+            if docker exec "$OPENCLAW_CONTAINER_NAME" curl -sf http://127.0.0.1:18789/health 2>/dev/null; then
+                log_info "✓ OpenClaw 容器已就绪"
+                break
+            fi
+        fi
+        sleep 5
+        waited=$((waited + 5))
+        echo -n "."
+    done
+    echo
+
+    if ! docker ps -q --filter "name=$OPENCLAW_CONTAINER_NAME" 2>/dev/null | grep -q .; then
+        log_error "OpenClaw 容器启动失败"
+        log_info "查看日志: docker logs $OPENCLAW_CONTAINER_NAME"
+        exit 1
+    fi
+
+    log_step "Phase 5: 运行 onboard 初始化设备"
+
+    log_info "执行 onboard --mode local（生成设备签名，解决 device signature expired）"
+    echo "y" | docker exec -i "$OPENCLAW_CONTAINER_NAME" node openclaw.mjs onboard --mode local 2>&1 | tee -a "${DEPLOY_LOG:-}" || true
+    log_info "onboard 完成，重启容器使设备签名生效..."
+
+    docker restart "$OPENCLAW_CONTAINER_NAME" 2>/dev/null
+    sleep 10
+
+    log_info "设备初始化完成"
+
+    echo
+    echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║              OpenClaw 部署完成                                ║${NC}"
+    echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
+    echo
+    echo -e "${BOLD}访问地址:${NC}"
+    echo -e "  直连 (token):      ${CYAN}http://127.0.0.1:18789/#token=${token}${NC}"
+    echo -e "  Nginx (token):     ${CYAN}https://127.0.0.1:18442/#token=${token}${NC}"
+    echo
+    echo -e "${BOLD}Gateway Token:${NC}"
+    echo -e "  ${YELLOW}$token${NC}"
+    echo
+    echo -e "${BOLD}Token 保存位置:${NC}"
+    echo -e "  - $OPENCLAW_TOKEN_FILE"
+    echo -e "  - $ENV_FILE (OPENCLAW_GATEWAY_TOKEN)"
+    echo
+    echo -e "${GREEN}════════════════════════════════════════════════════════════════${NC}"
+
+    OPENCLAW_STANDALONE_DONE=true
+    export OPENCLAW_STANDALONE_DONE
+}
+
 show_help() {
     echo
     echo -e "${BOLD}DevOpsClaw OpenClaw 部署脚本${NC}"
@@ -468,6 +536,7 @@ show_help() {
     echo
     echo -e "选项:"
     echo -e "  ${CYAN}-h, --help${NC}                      显示此帮助信息"
+    echo -e "  ${CYAN}--standalone${NC}                    一键部署/修复 OpenClaw（清数据+Token+部署+onboard+摘要）"
     echo -e "  ${CYAN}--deploy${NC}                        部署 OpenClaw 服务 (默认)"
     echo -e "  ${CYAN}--generate-token${NC}                生成 Gateway Token"
     echo -e "  ${CYAN}--reset-device${NC}                  重置 OpenClaw 设备"
@@ -484,6 +553,7 @@ show_help() {
     echo
     echo -e "示例:"
     echo -e "  $0                              部署 OpenClaw"
+    echo -e "  $0 --standalone                 一键部署/修复 OpenClaw（推荐）"
     echo -e "  $0 --generate-token             生成 Token"
     echo -e "  $0 --reset-device               重置设备"
     echo -e "  $0 --list-devices               列出设备"
@@ -536,6 +606,10 @@ main() {
                 ;;
             --restart)
                 action="restart"
+                shift
+                ;;
+            --standalone)
+                action="standalone"
                 shift
                 ;;
             *)
@@ -600,6 +674,14 @@ main() {
             log_step "重启 OpenClaw 服务"
             docker restart "$OPENCLAW_CONTAINER_NAME" 2>/dev/null
             log_info "OpenClaw 已重启"
+            ;;
+        standalone)
+            check_root
+            check_docker
+            if [[ -f "$PROJECT_DIR/.env" ]]; then
+                load_env "$PROJECT_DIR/.env"
+            fi
+            deploy_openclaw_standalone
             ;;
     esac
 }
