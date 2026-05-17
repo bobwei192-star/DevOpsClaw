@@ -1,7 +1,7 @@
 # 状态管理设计讨论：内存 vs 磁盘
 
 > **日期**: 2026-05-13  
-> **关联**: `openclaw-skill-ci-selfheal/scripts/orchestrator.py`  
+> **关联**: `agent-skill-ci-selfheal/scripts/orchestrator.py`  
 > **现状**: 启动时读 `.self-heal-state.json` 到 `self.state` 内存字典，后续所有操作（`_save_state`、`_get_chain`、`_circuit_break`）操作内存，`_save_state` 时同步写回磁盘。
 
 ---

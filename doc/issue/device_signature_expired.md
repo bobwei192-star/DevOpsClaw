@@ -1,17 +1,17 @@
-# OpenClaw "device signature expired" 问题诊断与修复
+# Agent "device signature expired" 问题诊断与修复
 
 ## 问题现象
 
-- 浏览器访问 OpenClaw Dashboard 时，WebSocket 连接被关闭，返回 `code=1008 reason=device signature expired`
+- 浏览器访问 Agent Dashboard 时，WebSocket 连接被关闭，返回 `code=1008 reason=device signature expired`
 - 或者报错 `origin not allowed (open the Control UI from the gateway host or allow it in gateway.controlUi.allowedOrigins)`
 
 ---
 
 ## 根因分析（按优先级排序）
 
-### 根因 1：OpenClaw 已知 Bug - `allowInsecureAuth` 无法跳过设备签名验证（**主因**）
+### 根因 1：Agent 已知 Bug - `allowInsecureAuth` 无法跳过设备签名验证（**主因**）
 
-**这是 OpenClaw 的已知 Bug**（[GitHub Issue #2248](https://github.com/openclaw/openclaw/issues/2248)）。
+**这是 Agent 的已知 Bug**（[GitHub Issue #2248](https://github.com/agent/agent/issues/2248)）。
 
 **问题机制**：
 1. `gateway.controlUi.allowInsecureAuth: true` 的设计意图是允许纯 token 认证，跳过设备配对
@@ -22,23 +22,23 @@
 6. **更关键的是**：即使 `allowInsecureAuth: true`，网关也不会在签名失败后回退到 token 认证
 
 **官方解决方案**：
-OpenClaw 维护者在 main 分支添加了 `gateway.controlUi.dangerouslyDisableDeviceAuth: true` 配置，**完全禁用** Control UI 的设备身份验证。
+Agent 维护者在 main 分支添加了 `gateway.controlUi.dangerouslyDisableDeviceAuth: true` 配置，**完全禁用** Control UI 的设备身份验证。
 
 > ⚠️ **注意**：这个配置被标记为 `critical` 安全级别，因为它完全跳过了设备身份验证。只在受信任的内网环境使用。
 
 ### 根因 2：时间不同步
 
-OpenClaw Gateway 在 WebSocket 握手时会验证设备签名的时间戳。如果**客户端（浏览器）和服务器（OpenClaw 容器）的时间偏差超过 2 分钟**，签名就会被视为过期。
+Agent Gateway 在 WebSocket 握手时会验证设备签名的时间戳。如果**客户端（浏览器）和服务器（Agent 容器）的时间偏差超过 2 分钟**，签名就会被视为过期。
 
 在 Docker/WSL2 环境中，容器时钟经常与宿主机不同步（常见 8 小时时差，因为容器默认用 UTC，宿主机用 CST）。
 
 ### 根因 3：allowedOrigins 未配置
 
-OpenClaw 默认只允许从 localhost 访问 Control UI。如果通过 Nginx 代理或 IP 地址访问，需要在配置中明确允许。
+Agent 默认只允许从 localhost 访问 Control UI。如果通过 Nginx 代理或 IP 地址访问，需要在配置中明确允许。
 
 ### 根因 4：配置写入后未重启
 
-OpenClaw 启动时读取配置文件，之后不会自动重载。通过 `docker exec` 写入新配置后，**必须重启容器**才能生效。
+Agent 启动时读取配置文件，之后不会自动重载。通过 `docker exec` 写入新配置后，**必须重启容器**才能生效。
 
 ### 根因 5：浏览器缓存旧设备签名
 
@@ -56,7 +56,7 @@ sudo ntpdate -s time.windows.com || sudo ntpdate -s pool.ntp.org
 
 # 检查宿主机和容器时间是否一致
 date
-docker exec devopsclaw-openclaw date
+docker exec devopsagent-agent date
 ```
 
 如果时间差超过 2 分钟，必须修复。建议在启动容器时设置 TZ 环境变量：
@@ -68,24 +68,24 @@ docker exec devopsclaw-openclaw date
 ### 步骤 2：清理旧配置并重新部署
 
 ```bash
-cd /mnt/c/Users/Tong/Desktop/DevOpsClaw
+cd /mnt/c/Users/Tong/Desktop/DevOpsAgent
 
 # 停止并删除旧容器
-docker stop devopsclaw-openclaw
-docker rm devopsclaw-openclaw
+docker stop devopsagent-agent
+docker rm devopsagent-agent
 
 # 删除旧的坏配置（如果有）
-rm -f data/openclaw/openclaw.json
+rm -f data/agent/agent.json
 
 # 重新部署
-sudo ./deploy_openclaw/deploy_openclaw.sh --deploy
+sudo ./deploy_agent/deploy_agent.sh --deploy
 ```
 
 ### 步骤 3：验证配置已写入
 
 ```bash
 # 查看容器内的配置
-docker exec devopsclaw-openclaw cat /home/node/.openclaw/openclaw.json
+docker exec devopsagent-agent cat /home/node/.agent/agent.json
 ```
 
 确认包含：
@@ -97,7 +97,7 @@ docker exec devopsclaw-openclaw cat /home/node/.openclaw/openclaw.json
 ### 步骤 4：重启容器使配置生效
 
 ```bash
-docker restart devopsclaw-openclaw
+docker restart devopsagent-agent
 sleep 5
 ```
 
@@ -132,7 +132,7 @@ sudo python3 tests/test_device_signature_expired.py
 1. 生成新的 Gateway Token
 2. 同步系统时间
 3. 清理旧容器和数据
-4. 预写正确的 openclaw.json 配置（含 `dangerouslyDisableDeviceAuth`）
+4. 预写正确的 agent.json 配置（含 `dangerouslyDisableDeviceAuth`）
 5. 启动容器并运行 onboard 初始化
 6. 验证连通性
 
@@ -140,7 +140,7 @@ sudo python3 tests/test_device_signature_expired.py
 
 ## 关键配置说明
 
-### openclaw.json 关键字段
+### agent.json 关键字段
 
 ```json
 {
@@ -181,7 +181,7 @@ sudo python3 tests/test_device_signature_expired.py
 
 ### 为什么需要 `dangerouslyDisableDeviceAuth`
 
-根据 OpenClaw 官方 Issue #2248 的分析：
+根据 Agent 官方 Issue #2248 的分析：
 
 1. `allowInsecureAuth: true` 只在**没有设备身份**时生效
 2. 浏览器在 `localhost` 和 `HTTPS` 环境下会自动生成设备身份（因为 `crypto.subtle` API 可用）
@@ -195,32 +195,32 @@ sudo python3 tests/test_device_signature_expired.py
 
 ### 错误 1：Invalid --bind (use "loopback", "lan", "tailnet", "auto", or "custom")
 
-**原因**：在配置中设置了 `gateway.bind = '0.0.0.0'`，但 OpenClaw 只接受特定的绑定值。
+**原因**：在配置中设置了 `gateway.bind = '0.0.0.0'`，但 Agent 只接受特定的绑定值。
 
 **修复**：使用 `'lan'` 或 `'loopback'`，不要用 `'0.0.0.0'`。
 
-### 错误 2：host not found in upstream "devopsclaw-openclaw:18789"
+### 错误 2：host not found in upstream "devopsagent-agent:18789"
 
-**原因**：Nginx 无法解析 OpenClaw 容器的主机名。
+**原因**：Nginx 无法解析 Agent 容器的主机名。
 
 **修复**：Nginx 配置中使用 `127.0.0.1:18789` 代替容器名，或者确保两个容器在同一个 Docker 网络。
 
 ### 错误 3：容器启动后立即退出
 
-**原因**：配置文件中有错误（如无效的 bind 值），导致 OpenClaw 启动失败。
+**原因**：配置文件中有错误（如无效的 bind 值），导致 Agent 启动失败。
 
-**修复**：删除数据目录中的 `openclaw.json`，让 OpenClaw 生成默认配置。
+**修复**：删除数据目录中的 `agent.json`，让 Agent 生成默认配置。
 
 ### 错误 4：配置已写入但仍然报错
 
-**原因**：OpenClaw 启动时读取配置，之后不会自动重载。
+**原因**：Agent 启动时读取配置，之后不会自动重载。
 
-**修复**：写入配置后必须重启容器 `docker restart devopsclaw-openclaw`。
+**修复**：写入配置后必须重启容器 `docker restart devopsagent-agent`。
 
 ---
 
 ## 参考
 
-- OpenClaw 官方 Issue #2248: https://github.com/openclaw/openclaw/issues/2248
-- OpenClaw 官方 Issue #29298: https://github.com/openclaw/openclaw/issues/29298
-- 时间同步问题: https://github.com/openclaw/openclaw/issues/24455
+- Agent 官方 Issue #2248: https://github.com/agent/agent/issues/2248
+- Agent 官方 Issue #29298: https://github.com/agent/agent/issues/29298
+- 时间同步问题: https://github.com/agent/agent/issues/24455

@@ -40,7 +40,7 @@ description: "Automatically diagnoses and fixes Jenkins CI/CD build failures usi
 │          ┌───────────────────┼───────────────────┐                    │
 │          ▼                   ▼                   ▼                    │
 │  jenkins_client.py    jjb_manager.py      (AI 推理)                  │
-│  (Jenkins API)        (JJB 配置管理)      (OpenClaw CLI)             │
+│  (Jenkins API)        (JJB 配置管理)      (Agent CLI)             │
 │          │                   │                   │                    │
 │          └───────────────────┼───────────────────┘                    │
 │                              ▼                                          │
@@ -53,10 +53,10 @@ description: "Automatically diagnoses and fixes Jenkins CI/CD build failures usi
 
 | 维度 | 旧版 (Bridge 服务) | 新版 (Skill 架构) |
 |------|-------------------|-------------------|
-| **部署方式** | 独立 HTTP 服务 | 集成到 OpenClaw/Trae |
+| **部署方式** | 独立 HTTP 服务 | 集成到 Agent/Trae |
 | **状态管理** | 独立服务进程 | 按需激活 |
 | **可扩展性** | 需要维护服务 | Skill 原生支持 |
-| **与 AI 集成** | 外部调用 OpenClaw | 内部集成，无缝协作 |
+| **与 AI 集成** | 外部调用 Agent | 内部集成，无缝协作 |
 
 ## 核心文件说明
 
@@ -120,8 +120,8 @@ description: "Automatically diagnoses and fixes Jenkins CI/CD build failures usi
 │  - 关键错误片段                                               │
 │  - 当前修复轮次                                               │
 │                                                              │
-│  调用方式 (OpenClaw CLI):                                    │
-│  docker exec openclaw node openclaw.mjs \                  │
+│  调用方式 (Agent CLI):                                    │
+│  docker exec agent node agent.mjs \                  │
 │    infer model run \                                         │
 │    --model "custom-api-deepseek-com/deepseek-reasoner" \   │
 │    --prompt "<完整分析提示>"                                  │
@@ -250,7 +250,7 @@ python webhook_listener.py --port 5000
 | `JJB_INI_PATH` | JJB jenkins_jobs.ini 路径 | `./jjb-configs/jenkins_jobs.ini` |
 | `MAX_RETRY` | 最大修复轮次 | `5` |
 | `DEFAULT_MODEL` | 默认 AI 模型 | `deepseek-reasoner` |
-| `OPENCLAW_CONTAINER` | OpenClaw 容器名 | `openclaw` |
+| `AGENT_CONTAINER` | Agent 容器名 | `agent` |
 | `STATE_FILE` | 状态文件路径 | `./.self-heal-state.json` |
 
 ## 状态管理
@@ -367,14 +367,14 @@ print(f"YAML 文件: {yaml_file}")
 ### 3. AI 调用失败
 
 **检查**:
-- OpenClaw 容器是否运行: `docker ps | grep openclaw`
-- `OPENCLAW_CONTAINER` 名称是否正确
+- Agent 容器是否运行: `docker ps | grep agent`
+- `AGENT_CONTAINER` 名称是否正确
 - 模型名称是否正确
 
 **调试**:
 ```bash
-# 测试 OpenClaw CLI
-docker exec openclaw node openclaw.mjs infer model run \
+# 测试 Agent CLI
+docker exec agent node agent.mjs infer model run \
   --model "custom-api-deepseek-com/deepseek-reasoner" \
   --prompt "Hello, please respond with 'OK'"
 ```
@@ -468,7 +468,7 @@ jenkins-jobs --version
 - **架构**: Skill 集成式 (v4)
 - **更新日期**: 2026-05-06
 - **关键变更**:
-  - 从独立 Bridge 服务重构为 OpenClaw Skill
+  - 从独立 Bridge 服务重构为 Agent Skill
   - 简化部署，集成到 AI 工作流
   - 保留所有原有功能 (AI 诊断、JJB 管理、闭环流程)
 

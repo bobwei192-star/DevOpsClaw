@@ -1,11 +1,12 @@
 #!/bin/bash
 # =============================================================================
-# DevOpsClaw Nginx 部署脚本
+# DevOpsAgent Nginx 部署脚本
 # =============================================================================
 # 功能：
 #   - 部署 Nginx 反向代理服务
 #   - 配置 SSL 证书
 #   - 配置各服务的反向代理
+#   - ensure_nginx_proxy() 共享核心函数（供 deploy_all.sh 调用）
 #
 # 使用方法：
 #   - 独立运行: sudo ./deploy_nginx/deploy_nginx.sh
@@ -15,34 +16,307 @@
 #   - 注意: 使用 18440-18449 范围，避免与 GitLab 内置 HTTPS 端口 8443 冲突！
 #   - Nginx Jenkins: 18440
 #   - Nginx GitLab: 18441
-#   - Nginx OpenClaw: 18442
+#   - Nginx Agent: 18442
 #   - Nginx Registry: 18444
 #   - Nginx Harbor: 18445
 #   - Nginx SonarQube: 18446
 #
 # =============================================================================
 
-set -e
+if [[ -z "${_NGINX_SH_SOURCED:-}" ]]; then
+    _NGINX_SH_SOURCED=true
+    set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-LIB_DIR="$PROJECT_DIR/lib"
-DEPLOY_LOG="${PROJECT_DIR}/deploy.log"
-DOCKER_COMPOSE_CMD=""
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+    LIB_DIR="$PROJECT_DIR/lib"
+    DEPLOY_LOG="${PROJECT_DIR}/deploy.log"
+    DOCKER_COMPOSE_CMD=""
 
-source "$LIB_DIR/common.sh"
+    source "$LIB_DIR/common.sh"
+fi
 
 NGINX_PORT_JENKINS="${NGINX_PORT_JENKINS:-18440}"
 NGINX_PORT_GITLAB="${NGINX_PORT_GITLAB:-18441}"
-NGINX_PORT_OPENCLAW="${NGINX_PORT_OPENCLAW:-18442}"
+NGINX_PORT_AGENT="${NGINX_PORT_AGENT:-18442}"
 NGINX_PORT_REGISTRY="${NGINX_PORT_REGISTRY:-18444}"
 NGINX_PORT_HARBOR="${NGINX_PORT_HARBOR:-18445}"
 NGINX_PORT_SONARQUBE="${NGINX_PORT_SONARQUBE:-18446}"
-NGINX_BIND="${NGINX_BIND:-127.0.0.1}"
+NGINX_BIND="${NGINX_BIND:-$(detect_local_ip)}"
 NGINX_IMAGE="${NGINX_IMAGE:-nginx:alpine}"
-NGINX_CONTAINER_NAME="${NGINX_CONTAINER_NAME:-devopsclaw-nginx}"
-NGINX_CONF_DIR="${NGINX_CONF_DIR:-$SCRIPT_DIR/nginx}"
-NGINX_SSL_DIR="${NGINX_SSL_DIR:-$SCRIPT_DIR/nginx/ssl}"
+NGINX_CONTAINER_NAME="${NGINX_CONTAINER_NAME:-devopsagent-nginx}"
+NGINX_CONF_DIR="${NGINX_CONF_DIR:-${PROJECT_ROOT:-$PROJECT_DIR}/deploy_nginx/nginx}"
+NGINX_SSL_DIR="${NGINX_SSL_DIR:-${PROJECT_ROOT:-$PROJECT_DIR}/deploy_nginx/nginx/ssl}"
+
+# =============================================================================
+# ensure_nginx_proxy() — Nginx 共享核心函数
+# 供 deploy_all.sh 的 standalone 函数调用，也可由本脚本 standalone 模式使用
+# 职责: 清理→证书→检测服务→创建conf→启动Nginx→验证
+# =============================================================================
+ensure_nginx_proxy() {
+    local PROJECT_ROOT="${PROJECT_ROOT:-$PROJECT_DIR}"
+    local NGINX_CONF_DIR="$PROJECT_ROOT/deploy_nginx/nginx"
+    local NGINX_SSL_DIR="$NGINX_CONF_DIR/ssl"
+    local NGINX_CONF_D="$NGINX_CONF_DIR/conf.d"
+    local NGINX_CONF="$NGINX_CONF_DIR/nginx.conf"
+    local NGINX_IMAGE="${NGINX_IMAGE:-nginx:alpine}"
+
+    local NGINX_PORT_JENKINS="${NGINX_PORT_JENKINS:-18440}"
+    local NGINX_PORT_GITLAB="${NGINX_PORT_GITLAB:-18441}"
+    local NGINX_PORT_AGENT="${NGINX_PORT_AGENT:-18442}"
+    local NGINX_BIND="${NGINX_BIND:-$(detect_local_ip)}"
+
+    local NGINX_CONTAINER_NAME="${NGINX_CONTAINER_NAME:-devopsagent-nginx}"
+
+    log_info "Nginx 监听地址: $NGINX_BIND"
+
+    # 清理旧容器
+    log_info "清理旧 Nginx 容器（如存在）..."
+    if docker ps -q --filter "name=$NGINX_CONTAINER_NAME" 2>/dev/null | grep -q .; then
+        docker stop "$NGINX_CONTAINER_NAME" 2>/dev/null || true
+    fi
+    if docker ps -aq --filter "name=$NGINX_CONTAINER_NAME" 2>/dev/null | grep -q .; then
+        docker rm -f "$NGINX_CONTAINER_NAME" 2>/dev/null || true
+    fi
+
+    # SSL 证书
+    if [[ ! -d "$NGINX_SSL_DIR" ]]; then
+        mkdir -p "$NGINX_SSL_DIR"
+    fi
+
+    local cert_names=("devopsagent" "jenkins" "gitlab" "agent" "registry" "harbor" "sonarqube")
+    local need_generate=false
+
+    for name in "${cert_names[@]}"; do
+        if [[ ! -f "$NGINX_SSL_DIR/$name.crt" || ! -f "$NGINX_SSL_DIR/$name.key" ]]; then
+            need_generate=true
+            break
+        fi
+    done
+
+    if [[ "$need_generate" == true ]]; then
+        if ! command -v openssl &>/dev/null; then
+            log_error "openssl 未安装，无法生成证书"
+            exit 1
+        fi
+        log_info "部分 SSL 证书缺失，正在生成自签名证书..."
+        for name in "${cert_names[@]}"; do
+            if [[ -f "$NGINX_SSL_DIR/$name.crt" && -f "$NGINX_SSL_DIR/$name.key" ]]; then
+                continue
+            fi
+            openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+                -keyout "$NGINX_SSL_DIR/$name.key" \
+                -out "$NGINX_SSL_DIR/$name.crt" \
+                -subj "/C=CN/ST=Beijing/L=Beijing/O=DevOpsAgent/OU=DevOps/CN=$name.local" 2>/dev/null
+            chmod 600 "$NGINX_SSL_DIR/$name.key"
+            chmod 644 "$NGINX_SSL_DIR/$name.crt"
+            log_info "✓ 证书已生成: $name"
+        done
+    else
+        log_info "✓ 所有 SSL 证书已存在"
+    fi
+
+    # 检测后端服务并确保配置文件存在
+    if [[ ! -d "$NGINX_CONF_D" ]]; then
+        mkdir -p "$NGINX_CONF_D"
+    fi
+
+    local detected_services=()
+    local port_map_args=""
+
+    # 检测 Jenkins
+    if docker ps --filter "name=devopsagent-jenkins" --format "{{.Names}}" 2>/dev/null | grep -q .; then
+        log_info "✓ 检测到 Jenkins 容器"
+        detected_services+=("jenkins")
+        port_map_args="$port_map_args -p ${NGINX_BIND}:${NGINX_PORT_JENKINS}:8440"
+
+        log_info "创建/更新 jenkins.conf..."
+        cat > "$NGINX_CONF_D/jenkins.conf" << 'NGINXEOF'
+server {
+    listen 8440 ssl;
+    listen [::]:8440 ssl;
+
+    server_name _;
+
+    ssl_certificate /etc/nginx/ssl/devopsagent.crt;
+    ssl_certificate_key /etc/nginx/ssl/devopsagent.key;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    client_max_body_size 100m;
+
+    location = / {
+        return 301 /jenkins/;
+    }
+
+    location = /jenkins {
+        return 301 /jenkins/;
+    }
+
+    location /jenkins/ {
+        proxy_pass http://devopsagent-jenkins:8080/jenkins/;
+
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_read_timeout 300;
+        proxy_connect_timeout 5;
+        proxy_send_timeout 90;
+
+        proxy_redirect default;
+        proxy_redirect http:// https://;
+    }
+}
+NGINXEOF
+    else
+        log_info "- Jenkins 容器未运行，跳过"
+    fi
+
+    # 检测 GitLab
+    if docker ps --filter "name=devopsagent-gitlab" --format "{{.Names}}" 2>/dev/null | grep -q .; then
+        log_info "✓ 检测到 GitLab 容器"
+        detected_services+=("gitlab")
+        port_map_args="$port_map_args -p ${NGINX_BIND}:${NGINX_PORT_GITLAB}:8441"
+
+        log_info "创建/更新 gitlab.conf..."
+        cat > "$NGINX_CONF_D/gitlab.conf" << 'NGINXEOF'
+server {
+    listen 8441 ssl;
+    listen [::]:8441 ssl;
+
+    server_name _;
+
+    ssl_certificate /etc/nginx/ssl/devopsagent.crt;
+    ssl_certificate_key /etc/nginx/ssl/devopsagent.key;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    client_max_body_size 100m;
+
+    location / {
+        proxy_pass http://devopsagent-gitlab:80;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_read_timeout 300;
+        proxy_connect_timeout 5;
+        proxy_send_timeout 90;
+
+        proxy_set_header X-Forwarded-Ssl on;
+        proxy_set_header X-Forwarded-Port 8441;
+    }
+}
+NGINXEOF
+    else
+        log_info "- GitLab 容器未运行，跳过"
+    fi
+
+    # 检测 Agent（始终覆盖 agent.conf，确保 proxy_pass 指向容器名）
+    if docker ps --filter "name=devopsagent-agent" --format "{{.Names}}" 2>/dev/null | grep -q .; then
+        log_info "✓ 检测到 Agent 容器"
+        detected_services+=("agent")
+        port_map_args="$port_map_args -p ${NGINX_BIND}:${NGINX_PORT_AGENT}:8442"
+
+        log_info "创建/更新 agent.conf..."
+        cat > "$NGINX_CONF_D/agent.conf" << 'NGINXEOF'
+server {
+    listen 8442 ssl;
+    listen [::]:8442 ssl;
+
+    server_name _;
+
+    ssl_certificate /etc/nginx/ssl/devopsagent.crt;
+    ssl_certificate_key /etc/nginx/ssl/devopsagent.key;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    location / {
+        proxy_pass http://devopsagent-agent:18789;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        proxy_read_timeout 90;
+        proxy_connect_timeout 5;
+        proxy_send_timeout 90;
+    }
+}
+NGINXEOF
+    else
+        log_info "- Agent 容器未运行，跳过"
+    fi
+
+    if [[ ${#detected_services[@]} -eq 0 ]]; then
+        log_error "未检测到任何后端服务容器"
+        log_info "请确保至少有一个后端服务正在运行（Jenkins / GitLab / Agent / MantisBT）"
+        log_info "运行中的容器列表:"
+        docker ps --format "table {{.Names}}\t{{.Status}}" 2>/dev/null || true
+        exit 1
+    fi
+
+    # 保存到全局变量
+    NGINX_DETECTED_SERVICES=("${detected_services[@]}")
+
+    # 启动 Nginx 容器
+    local VOLUME_ARGS="-v $NGINX_CONF:/etc/nginx/nginx.conf:ro -v $NGINX_CONF_D:/etc/nginx/conf.d:ro -v $NGINX_SSL_DIR:/etc/nginx/ssl:ro"
+
+    echo "  检测到的服务: ${detected_services[*]}"
+    echo ""
+
+    docker run -d \
+        --name "$NGINX_CONTAINER_NAME" \
+        --network devopsagent-network \
+        --restart unless-stopped \
+        $VOLUME_ARGS \
+        $port_map_args \
+        "$NGINX_IMAGE" 2>/dev/null
+
+    sleep 3
+
+    if ! docker ps -q --filter "name=$NGINX_CONTAINER_NAME" 2>/dev/null | grep -q .; then
+        log_error "Nginx 容器启动失败"
+        log_info "查看日志: docker logs $NGINX_CONTAINER_NAME"
+        exit 1
+    fi
+
+    log_info "✓ Nginx 容器已启动"
+
+    # 验证配置
+    if docker exec "$NGINX_CONTAINER_NAME" nginx -t 2>/dev/null; then
+        log_info "✓ Nginx 配置语法正确"
+        docker exec "$NGINX_CONTAINER_NAME" nginx -s reload 2>/dev/null
+        log_info "✓ Nginx 配置已重载"
+    else
+        log_warn "Nginx 配置语法错误，请检查日志"
+        log_info "查看错误详情: docker logs $NGINX_CONTAINER_NAME"
+    fi
+}
 
 check_nginx_ssl_certificates() {
     log_step "检查 Nginx SSL 证书"
@@ -50,7 +324,7 @@ check_nginx_ssl_certificates() {
     local cert_files=(
         "jenkins.crt"
         "gitlab.crt"
-        "openclaw.crt"
+        "agent.crt"
         "registry.crt"
         "harbor.crt"
         "sonarqube.crt"
@@ -88,7 +362,7 @@ generate_nginx_ssl_certificates() {
     local domains=(
         "jenkins"
         "gitlab"
-        "openclaw"
+        "agent"
         "registry"
         "harbor"
         "sonarqube"
@@ -97,7 +371,7 @@ generate_nginx_ssl_certificates() {
     local country="CN"
     local state="Beijing"
     local locality="Beijing"
-    local organization="DevOpsClaw"
+    local organization="DevOpsAgent"
     local organizational_unit="DevOps"
     
     for domain in "${domains[@]}"; do
@@ -153,7 +427,7 @@ deploy_nginx() {
     log_info "创建 Nginx 容器..."
     echo "  - 端口 Jenkins: $NGINX_BIND:$NGINX_PORT_JENKINS -> 8440"
     echo "  - 端口 GitLab: $NGINX_BIND:$NGINX_PORT_GITLAB -> 8441"
-    echo "  - 端口 OpenClaw: $NGINX_BIND:$NGINX_PORT_OPENCLAW -> 8442"
+    echo "  - 端口 Agent: $NGINX_BIND:$NGINX_PORT_AGENT -> 8442"
     echo "  - 端口 Registry: $NGINX_BIND:$NGINX_PORT_REGISTRY -> 8444"
     echo "  - 端口 Harbor: $NGINX_BIND:$NGINX_PORT_HARBOR -> 8445"
     echo "  - 端口 SonarQube: $NGINX_BIND:$NGINX_PORT_SONARQUBE -> 8446"
@@ -161,11 +435,11 @@ deploy_nginx() {
     
     docker run -d \
         --name "$NGINX_CONTAINER_NAME" \
-        --network devopsclaw-network \
+        --network devopsagent-network \
         --restart unless-stopped \
         -p "$NGINX_BIND:$NGINX_PORT_JENKINS:8440" \
         -p "$NGINX_BIND:$NGINX_PORT_GITLAB:8441" \
-        -p "$NGINX_BIND:$NGINX_PORT_OPENCLAW:8442" \
+        -p "$NGINX_BIND:$NGINX_PORT_AGENT:8442" \
         -p "$NGINX_BIND:$NGINX_PORT_REGISTRY:8444" \
         -p "$NGINX_BIND:$NGINX_PORT_HARBOR:8445" \
         -p "$NGINX_BIND:$NGINX_PORT_SONARQUBE:8446" \
@@ -207,19 +481,20 @@ print_nginx_summary() {
     
     echo
     echo -e "${BOLD}Nginx 反向代理访问地址 (HTTPS):${NC}"
-    echo -e "  - Jenkins: ${CYAN}https://127.0.0.1:$NGINX_PORT_JENKINS/jenkins/${NC}"
-    echo -e "  - GitLab: ${CYAN}https://127.0.0.1:$NGINX_PORT_GITLAB${NC}"
-    echo -e "  - OpenClaw: ${CYAN}https://127.0.0.1:$NGINX_PORT_OPENCLAW${NC}"
+    local bind_display="${NGINX_BIND:-$(detect_local_ip)}"
+    echo -e "  - Jenkins: ${CYAN}https://${bind_display}:$NGINX_PORT_JENKINS/jenkins/${NC}"
+    echo -e "  - GitLab: ${CYAN}https://${bind_display}:$NGINX_PORT_GITLAB${NC}"
+    echo -e "  - Agent: ${CYAN}https://${bind_display}:$NGINX_PORT_AGENT${NC}"
     if [[ "$NGINX_PORT_REGISTRY" != "" ]]; then
-        echo -e "  - Registry: ${CYAN}https://127.0.0.1:$NGINX_PORT_REGISTRY${NC}"
+        echo -e "  - Registry: ${CYAN}https://${bind_display}:$NGINX_PORT_REGISTRY${NC}"
         echo -e "    注意: Registry 服务需要单独部署才能访问${NC}"
     fi
     if [[ "$NGINX_PORT_HARBOR" != "" ]]; then
-        echo -e "  - Harbor: ${CYAN}https://127.0.0.1:$NGINX_PORT_HARBOR${NC}"
+        echo -e "  - Harbor: ${CYAN}https://${bind_display}:$NGINX_PORT_HARBOR${NC}"
         echo -e "    注意: Harbor 服务需要单独部署才能访问${NC}"
     fi
     if [[ "$NGINX_PORT_SONARQUBE" != "" ]]; then
-        echo -e "  - SonarQube: ${CYAN}https://127.0.0.1:$NGINX_PORT_SONARQUBE${NC}"
+        echo -e "  - SonarQube: ${CYAN}https://${bind_display}:$NGINX_PORT_SONARQUBE${NC}"
         echo -e "    注意: SonarQube 服务需要单独部署才能访问${NC}"
     fi
     
@@ -231,7 +506,7 @@ print_nginx_summary() {
 
 show_help() {
     echo
-    echo -e "${BOLD}DevOpsClaw Nginx 部署脚本${NC}"
+    echo -e "${BOLD}DevOpsAgent Nginx 部署脚本${NC}"
     echo
     echo -e "用法: $0 [选项]"
     echo
@@ -250,7 +525,7 @@ show_help() {
     echo -e "环境变量:"
     echo -e "  NGINX_PORT_JENKINS=${NGINX_PORT_JENKINS}     Nginx Jenkins 端口"
     echo -e "  NGINX_PORT_GITLAB=${NGINX_PORT_GITLAB}       Nginx GitLab 端口"
-    echo -e "  NGINX_PORT_OPENCLAW=${NGINX_PORT_OPENCLAW}   Nginx OpenClaw 端口"
+    echo -e "  NGINX_PORT_AGENT=${NGINX_PORT_AGENT}   Nginx Agent 端口"
     echo -e "  NGINX_CONTAINER_NAME=${NGINX_CONTAINER_NAME}"
     echo
     echo -e "示例:"
@@ -371,7 +646,6 @@ main() {
             if [[ -f "$PROJECT_DIR/.env" ]]; then
                 load_env "$PROJECT_DIR/.env"
             fi
-            source "$PROJECT_DIR/deploy_all.sh"
             log_banner
             log_step "Nginx 一键部署/修复"
             ensure_nginx_proxy

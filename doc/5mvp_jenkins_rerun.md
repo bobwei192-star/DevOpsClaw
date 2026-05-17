@@ -1,8 +1,8 @@
-# DevOpsClaw 自愈流水线 MVP 工程化部署指南
+# DevOpsAgent 自愈流水线 MVP 工程化部署指南
 
-> **版本**: v4.0.0 (OpenClaw Skill 架构版)  
+> **版本**: v4.0.0 (Agent Skill 架构版)  
 > **更新日期**: 2026-05-06  
-> **部署方式**: Docker Compose 统一编排 + OpenClaw Skill 集成  
+> **部署方式**: Docker Compose 统一编排 + Agent Skill 集成  
 > **Job 管理**: Jenkins Job Builder (JJB) YAML 配置管理
 
 ---
@@ -11,7 +11,7 @@
 
 1. [架构概览](#一架构概览)
 2. [Docker Compose 服务编排](#二docker-compose-服务编排)
-3. [OpenClaw Skill 架构](#三openclaw-skill-架构)
+3. [Agent Skill 架构](#三agent-skill-架构)
 4. [JJB (Jenkins Job Builder) 配置](#四jjb-jenkins-job-builder-配置)
 5. [核心闭环流程](#五核心闭环流程)
 6. [部署步骤](#六部署步骤)
@@ -28,7 +28,7 @@
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │                              Docker Compose 统一编排网络                                               │
-│                          (devopsclaw-network, bridge 模式)                                           │
+│                          (devopsagent-network, bridge 模式)                                           │
 └─────────────────────────────────────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────────────────────────────────────┐
@@ -54,9 +54,9 @@
 │  │  │   │                                                                                   │   │ │ │
 │  │  │   └─────────────────────────────────────────────────────────────────────────────────┘   │ │ │
 │  │  │                                                                                           │ │ │
-│  │  │  容器名: devopsclaw-jenkins                                                              │ │ │
+│  │  │  容器名: devopsagent-jenkins                                                              │ │ │
 │  │  │  端口: 127.0.0.1:8081:8080 (外部), 50000 (代理)                                        │ │ │
-│  │  │  网络: devopsclaw-network                                                                 │ │ │
+│  │  │  网络: devopsagent-network                                                                 │ │ │
 │  │  │                                                                                           │ │ │
 │  │  └─────────────────────────────────────────────────────────────────────────────────────────┘ │ │
 │  └───────────────────────────────────────────────────────────────────────────────────────────────┘ │
@@ -68,7 +68,7 @@
 │                                      │ 4. 触发新构建 (同一 Job)                                       │
 │                                      ▼                                                               │
 │  ┌───────────────────────────────────────────────────────────────────────────────────────────────┐ │
-│  │                      OpenClaw/Trae (AI 平台 + Skill 引擎)                                      │ │
+│  │                      Agent/Trae (AI 平台 + Skill 引擎)                                      │ │
 │  │  ┌─────────────────────────────────────────────────────────────────────────────────────────┐ │ │
 │  │  │                                                                                           │ │ │
 │  │  │  ┌─────────────────────────────────────────────────────────────────────────────────────┐ │ │ │
@@ -83,14 +83,14 @@
 │  │  │  │                                                                                         │ │ │ │
 │  │  │  │  【架构变化】不再是独立的 Bridge 服务                                                    │ │ │ │
 │  │  │  │  而是:                                                                                   │ │ │ │
-│  │  │  │  1. 作为 OpenClaw Skill 原生集成                                                        │ │ │ │
+│  │  │  │  1. 作为 Agent Skill 原生集成                                                        │ │ │ │
 │  │  │  │  2. 无需独立容器/进程                                                                    │ │ │ │
 │  │  │  │  3. 与 AI 引擎无缝协作                                                                   │ │ │ │
 │  │  │  │                                                                                         │ │ │ │
 │  │  │  │  工作流程:                                                                              │ │ │ │
 │  │  │  │  1. 从 Jenkins 获取失败日志、Jenkinsfile                                                 │ │ │ │
 │  │  │  │  2. 读取 JJB YAML 配置文件 (优先)                                                       │ │ │ │
-│  │  │  │  3. 调用 OpenClaw AI 诊断                                                                │ │ │ │
+│  │  │  │  3. 调用 Agent AI 诊断                                                                │ │ │ │
 │  │  │  │  4. AI 返回修复后的 Jenkinsfile                                                          │ │ │ │
 │  │  │  │  5. 更新 JJB YAML 配置文件                                                               │ │ │ │
 │  │  │  │  6. 执行 `jenkins-jobs update` 更新原 Job                                                │ │ │ │
@@ -98,9 +98,9 @@
 │  │  │  │                                                                                         │ │ │ │
 │  │  │  └─────────────────────────────────────────────────────────────────────────────────────┘ │ │ │
 │  │  │                                                                                           │ │ │
-│  │  │  容器名: devopsclaw-openclaw                                                               │ │ │
+│  │  │  容器名: devopsagent-agent                                                               │ │ │
 │  │  │  端口: 127.0.0.1:18789:18789                                                              │ │ │
-│  │  │  网络: devopsclaw-network                                                                 │ │ │
+│  │  │  网络: devopsagent-network                                                                 │ │ │
 │  │  │                                                                                           │ │ │
 │  │  └─────────────────────────────────────────────────────────────────────────────────────────┘ │ │
 │  └───────────────────────────────────────────────────────────────────────────────────────────────┘ │
@@ -133,7 +133,7 @@
 │  - 内置 PostgreSQL: GitLab Omnibus 自带，自动配置                                                    │
 │  - 内置 Redis: GitLab Omnibus 自带，自动配置                                                         │
 │                                                                                                       │
-│  容器名: devopsclaw-gitlab                                                                            │
+│  容器名: devopsagent-gitlab                                                                            │
 │  端口: 127.0.0.1:8082:80 (HTTP), 8443:443 (HTTPS), 2222:22 (SSH)                                  │
 │                                                                                                       │
 │ 【重要】自愈功能本身不需要 GitLab，可替换为 GitHub、Gitea 等                                          │
@@ -145,23 +145,23 @@
 
 | 维度 | v3.0.0 (旧方式) | v4.0.0 (新方式) | 原因 |
 |------|-----------------|-----------------|------|
-| **中间件架构** | Bridge 独立服务 (Docker 容器) | **OpenClaw Skill 原生集成** | 消除额外服务，简化部署 |
+| **中间件架构** | Bridge 独立服务 (Docker 容器) | **Agent Skill 原生集成** | 消除额外服务，简化部署 |
 | **PostgreSQL** | 独立容器 (为 GitLab) | **GitLab 内置** | GitLab CE 自带，无需单独管理 |
 | **Redis** | 独立容器 (为 GitLab) | **GitLab 内置** | GitLab CE 自带，无需单独管理 |
-| **服务数量** | 7 个服务 (PostgreSQL, Redis, GitLab, Jenkins, Bridge, OpenClaw) | **3-4 个服务** | 大幅简化运维 |
+| **服务数量** | 7 个服务 (PostgreSQL, Redis, GitLab, Jenkins, Bridge, Agent) | **3-4 个服务** | 大幅简化运维 |
 | **状态管理** | Bridge 服务内部 | **本地 JSON 文件** | Skill 原生，无需额外存储 |
-| **AI 调用** | Bridge 调用 OpenClaw CLI | **Skill 内部直接调用** | 更高效，无缝集成 |
+| **AI 调用** | Bridge 调用 Agent CLI | **Skill 内部直接调用** | 更高效，无缝集成 |
 
 ### 1.3 服务清单 (v4.0.0)
 
 | 服务 | 是否必需 | 说明 | 独立服务？ |
 |------|---------|------|-----------|
-| **OpenClaw** | ✅ 必需 | AI 网关 + Skill 引擎 | ✅ Docker 容器 |
+| **Agent** | ✅ 必需 | AI 网关 + Skill 引擎 | ✅ Docker 容器 |
 | **Jenkins** | ✅ 必需 | CI/CD 引擎 | ✅ Docker 容器 |
 | **GitLab CE** | ❌ 可选 | 代码仓库 (使用内置 PostgreSQL/Redis) | ✅ Docker 容器 (可选) |
 | **PostgreSQL** | ❌ 已移除 | 之前为 GitLab，**现在 GitLab 内置** | ❌ 不再需要 |
 | **Redis** | ❌ 已移除 | 之前为 GitLab，**现在 GitLab 内置** | ❌ 不再需要 |
-| **Bridge** | ❌ 已移除 | **整合为 OpenClaw Skill** | ❌ 不再需要 |
+| **Bridge** | ❌ 已移除 | **整合为 Agent Skill** | ❌ 不再需要 |
 | **CI Self-Heal Skill** | ✅ 必需 | 自愈核心逻辑 | ❌ Skill (非独立服务) |
 
 ### 1.4 网络访问矩阵
@@ -170,8 +170,8 @@
 |------|------|---------|------|
 | Jenkins 容器 | Skill (通过 Webhook) | `http://host.docker.internal:5000` | 可选的 Webhook Listener |
 | Skill (本地) | Jenkins | `http://127.0.0.1:8081/jenkins` 或容器名 | 直接调用 Jenkins API |
-| OpenClaw 容器 | AI API | `https://api.deepseek.com` | 外部 HTTPS 调用 |
-| Skill | OpenClaw CLI | `docker exec devopsclaw-openclaw ...` | 调用 AI 模型 |
+| Agent 容器 | AI API | `https://api.deepseek.com` | 外部 HTTPS 调用 |
+| Skill | Agent CLI | `docker exec devopsagent-agent ...` | 调用 AI 模型 |
 
 ---
 
@@ -183,13 +183,13 @@
 version: '3.8'
 
 networks:
-  devopsclaw-network:
+  devopsagent-network:
     driver: bridge
-    name: devopsclaw-network
+    name: devopsagent-network
 
 volumes:
   jenkins-home:      # Jenkins 数据持久化
-  openclaw-data:     # OpenClaw 数据持久化
+  agent-data:     # Agent 数据持久化
   gitlab-config:     # GitLab 配置 (可选)
   gitlab-logs:       # GitLab 日志 (可选)
   gitlab-data:       # GitLab 数据 (可选)
@@ -197,12 +197,12 @@ volumes:
 
 ### 2.2 服务详解
 
-#### 2.2.1 OpenClaw (AI 网关 + Skill 引擎)
+#### 2.2.1 Agent (AI 网关 + Skill 引擎)
 
 ```yaml
-openclaw:
-  image: ghcr.io/openclaw/openclaw:latest
-  container_name: devopsclaw-openclaw
+agent:
+  image: ghcr.io/agent/agent:latest
+  container_name: devopsagent-agent
   restart: unless-stopped
   user: "1000:1000"                    # 非 root 用户
   cap_drop:
@@ -213,15 +213,15 @@ openclaw:
   tmpfs:
     - /tmp:rw,noexec,nosuid,size=64m  # 临时可写目录
   networks:
-    - devopsclaw-network
+    - devopsagent-network
   ports:
     - "127.0.0.1:18789:18789"         # 仅本地绑定
   volumes:
-    - openclaw-data:/home/node/.openclaw
+    - agent-data:/home/node/.agent
   environment:
-    - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
-  working_dir: /home/node/openclaw
-  command: node openclaw.mjs gateway --allow-unconfigured
+    - AGENT_GATEWAY_TOKEN=${AGENT_GATEWAY_TOKEN}
+  working_dir: /home/node/agent
+  command: node agent.mjs gateway --allow-unconfigured
 ```
 
 #### 2.2.2 Jenkins (CI/CD 引擎)
@@ -229,11 +229,11 @@ openclaw:
 ```yaml
 jenkins:
   image: jenkins/jenkins:lts-jdk17
-  container_name: devopsclaw-jenkins
+  container_name: devopsagent-jenkins
   restart: unless-stopped
   user: root
   networks:
-    - devopsclaw-network
+    - devopsagent-network
   ports:
     - "127.0.0.1:8081:8080"    # Web UI
     - "127.0.0.1:50000:50000"  # Agent 连接
@@ -252,11 +252,11 @@ jenkins:
 ```yaml
 gitlab:
   image: gitlab/gitlab-ce:latest
-  container_name: devopsclaw-gitlab
+  container_name: devopsagent-gitlab
   restart: unless-stopped
-  hostname: ${GITLAB_HOSTNAME:-gitlab.devopsclaw.local}
+  hostname: ${GITLAB_HOSTNAME:-gitlab.devopsagent.local}
   networks:
-    - devopsclaw-network
+    - devopsagent-network
   ports:
     - "127.0.0.1:8082:80"      # HTTP
     - "127.0.0.1:8443:443"     # HTTPS
@@ -267,7 +267,7 @@ gitlab:
     - gitlab-data:/var/opt/gitlab
   environment:
     - GITLAB_OMNIBUS_CONFIG="
-        external_url 'http://${GITLAB_HOSTNAME:-gitlab.devopsclaw.local}';
+        external_url 'http://${GITLAB_HOSTNAME:-gitlab.devopsagent.local}';
         gitlab_rails['gitlab_shell_ssh_port'] = 2222;
       "
 ```
@@ -281,12 +281,12 @@ gitlab:
 
 ```bash
 # ============================================
-# DevOpsClaw 环境变量配置
+# DevOpsAgent 环境变量配置
 # ============================================
 
-# ---------- OpenClaw Gateway ----------
+# ---------- Agent Gateway ----------
 # 生成命令: tr -dc A-Za-z0-9 < /dev/urandom | head -c 64
-OPENCLAW_GATEWAY_TOKEN=your_secure_token_here
+AGENT_GATEWAY_TOKEN=your_secure_token_here
 
 # ---------- Jenkins ----------
 JENKINS_URL=http://127.0.0.1:8081/jenkins
@@ -303,7 +303,7 @@ DEFAULT_MODEL=deepseek-reasoner
 MAX_RETRY=5
 
 # ---------- GitLab (可选) ----------
-GITLAB_HOSTNAME=gitlab.devopsclaw.local
+GITLAB_HOSTNAME=gitlab.devopsagent.local
 
 # ---------- JJB 配置 ----------
 JJB_CONFIG_PATH=./jjb-configs
@@ -311,7 +311,7 @@ JJB_CONFIG_PATH=./jjb-configs
 
 ---
 
-## 三、OpenClaw Skill 架构
+## 三、Agent Skill 架构
 
 ### 3.1 Skill 文件结构
 
@@ -381,7 +381,7 @@ description: "Automatically diagnoses and fixes Jenkins CI/CD build failures usi
 
 #### 方式 1: 作为 Skill 自动激活
 
-当 Skill 被正确配置后，OpenClaw/Trae 会自动检测并使用。
+当 Skill 被正确配置后，Agent/Trae 会自动检测并使用。
 
 #### 方式 2: Python 模块调用
 
@@ -547,7 +547,7 @@ Bridge 服务 (独立 Docker 容器)
      │
      ├──► 接收 Webhook
      ├──► 拉取日志
-     ├──► 调用 OpenClaw CLI
+     ├──► 调用 Agent CLI
      ├──► AI 诊断
      ├──► 更新 JJB 配置
      ├──► 触发重构建
@@ -555,16 +555,16 @@ Bridge 服务 (独立 Docker 容器)
      ▼ 等待下次构建结果
 ```
 
-#### 新流程 (v4.0.0: OpenClaw Skill)
+#### 新流程 (v4.0.0: Agent Skill)
 
 ```
 Jenkins 构建失败
      │
      ▼ Webhook / 直接调用
      │
-OpenClaw Skill (ci-selfheal) 被激活
+Agent Skill (ci-selfheal) 被激活
      │
-     ├──► 内置在 OpenClaw/Trae 中
+     ├──► 内置在 Agent/Trae 中
      ├──► 无需独立服务
      ├──► 与 AI 无缝协作
      │
@@ -657,9 +657,9 @@ OpenClaw Skill (ci-selfheal) 被激活
 │   步骤 2: 调用 AI 模型                                                                                │
 │   ┌─────────────────────────────────────────────────────────────────────────────────────────────┐   │
 │   │                                                                                                 │   │
-│   │  调用方式: OpenClaw CLI (Skill 内部直接调用)                                                   │   │
+│   │  调用方式: Agent CLI (Skill 内部直接调用)                                                   │   │
 │   │                                                                                                 │   │
-│   │  docker exec devopsclaw-openclaw node openclaw.mjs \                                         │   │
+│   │  docker exec devopsagent-agent node agent.mjs \                                         │   │
 │   │      infer model run \                                                                         │   │
 │   │      --model "custom-api-deepseek-com/deepseek-reasoner" \                                   │   │
 │   │      --prompt "<完整 Prompt>"                                                                  │   │
@@ -771,8 +771,8 @@ OpenClaw Skill (ci-selfheal) 被激活
 
 ```bash
 cd C:\Users\Tong\Desktop
-git clone <repository-url> DevOpsClaw
-cd DevOpsClaw
+git clone <repository-url> DevOpsAgent
+cd DevOpsAgent
 ```
 
 #### 步骤 2: 配置环境变量
@@ -783,18 +783,18 @@ copy .env.example .env
 
 # 编辑 .env，填入实际值
 # 至少需要配置:
-# - OPENCLAW_GATEWAY_TOKEN
+# - AGENT_GATEWAY_TOKEN
 # - JENKINS_TOKEN
 ```
 
 #### 步骤 3: 启动核心服务
 
 ```bash
-# 启动所有服务 (OpenClaw, Jenkins, GitLab)
+# 启动所有服务 (Agent, Jenkins, GitLab)
 docker-compose up -d
 
 # 或者只启动必需服务 (不包含 GitLab)
-# docker-compose up -d openclaw jenkins
+# docker-compose up -d agent jenkins
 ```
 
 #### 步骤 4: 等待服务启动
@@ -804,13 +804,13 @@ docker-compose up -d
 docker-compose ps
 
 # 查看日志
-docker-compose logs -f openclaw
+docker-compose logs -f agent
 docker-compose logs -f jenkins
 docker-compose logs -f gitlab  # 如果使用了
 ```
 
 **启动时间参考**:
-- OpenClaw: ~30 秒
+- Agent: ~30 秒
 - Jenkins: ~2-3 分钟
 - GitLab: ~5-10 分钟 (首次启动)
 
@@ -818,7 +818,7 @@ docker-compose logs -f gitlab  # 如果使用了
 
 1. **获取初始密码**:
 ```bash
-docker exec devopsclaw-jenkins cat /var/jenkins_home/secrets/initialAdminPassword
+docker exec devopsagent-jenkins cat /var/jenkins_home/secrets/initialAdminPassword
 ```
 
 2. **访问 Jenkins UI**:
@@ -864,8 +864,8 @@ python .trae\skills\ci-selfheal\ci_selfheal.py --help
 如果不需要 GitLab，可以只启动核心服务：
 
 ```bash
-# 只启动 OpenClaw 和 Jenkins
-docker-compose up -d openclaw jenkins
+# 只启动 Agent 和 Jenkins
+docker-compose up -d agent jenkins
 ```
 
 **代码仓库替代方案**:
@@ -914,7 +914,7 @@ python .trae\skills\ci-selfheal\ci_selfheal.py \
 1. **构建 #1**: 失败 (date-- 命令错误)
 2. **Skill 激活**: 自动检测到失败
 3. **信息收集**: 拉取日志、读取 JJB 配置
-4. **AI 诊断**: 调用 OpenClaw 分析错误
+4. **AI 诊断**: 调用 Agent 分析错误
 5. **配置更新**: 更新 JJB YAML，将 `date--` 修复为 `date`
 6. **触发重构建**: 构建 #2
 7. **构建 #2**: 成功 (date 命令正确执行)
@@ -952,7 +952,7 @@ type .self-heal-state.json
 docker-compose ps
 
 # 查看特定服务日志
-docker-compose logs -f openclaw
+docker-compose logs -f agent
 docker-compose logs -f jenkins
 docker-compose logs -f gitlab
 
@@ -998,7 +998,7 @@ type .self-heal-state.json
 
 | 服务 | 日志位置 |
 |------|---------|
-| OpenClaw | Docker logs |
+| Agent | Docker logs |
 | Jenkins | Docker logs + Jenkins UI |
 | GitLab | Docker logs + `/var/log/gitlab` (容器内) |
 | Skill | 控制台输出 + 可选文件日志 |
@@ -1009,13 +1009,13 @@ type .self-heal-state.json
 
 ```bash
 # 备份 Jenkins 数据
-docker run --rm --volumes-from devopsclaw-jenkins -v $(pwd):/backup ubuntu tar cvf /backup/jenkins-backup.tar /var/jenkins_home
+docker run --rm --volumes-from devopsagent-jenkins -v $(pwd):/backup ubuntu tar cvf /backup/jenkins-backup.tar /var/jenkins_home
 
-# 备份 OpenClaw 数据
-docker run --rm --volumes-from devopsclaw-openclaw -v $(pwd):/backup ubuntu tar cvf /backup/openclaw-backup.tar /home/node/.openclaw
+# 备份 Agent 数据
+docker run --rm --volumes-from devopsagent-agent -v $(pwd):/backup ubuntu tar cvf /backup/agent-backup.tar /home/node/.agent
 
 # 备份 GitLab 数据 (如果使用)
-docker exec devopsclaw-gitlab gitlab-backup create
+docker exec devopsagent-gitlab gitlab-backup create
 ```
 
 #### 配置备份
@@ -1099,26 +1099,26 @@ python -c "import yaml; yaml.safe_load(open('jjb-configs/example-pipeline.yaml')
 
 ---
 
-#### 问题 3: OpenClaw 调用失败
+#### 问题 3: Agent 调用失败
 
 **症状**: 无法调用 AI 模型
 
 **排查步骤**:
 ```bash
-# 1. 检查 OpenClaw 容器状态
-docker-compose ps openclaw
+# 1. 检查 Agent 容器状态
+docker-compose ps agent
 
 # 2. 检查健康检查
 curl http://127.0.0.1:18789/health
 
 # 3. 测试 CLI 调用
-docker exec devopsclaw-openclaw node openclaw.mjs --help
+docker exec devopsagent-agent node agent.mjs --help
 ```
 
 **解决方案**:
-- 验证 `OPENCLAW_GATEWAY_TOKEN` 配置
+- 验证 `AGENT_GATEWAY_TOKEN` 配置
 - 检查网络连接 (能否访问外部 AI API)
-- 查看 OpenClaw 日志: `docker-compose logs openclaw`
+- 查看 Agent 日志: `docker-compose logs agent`
 
 ---
 
@@ -1144,7 +1144,7 @@ python .trae\skills\ci-selfheal\ci_selfheal.py \
 **可能原因**:
 - Skill 目录位置不正确
 - SKILL.md 格式错误
-- OpenClaw/Trae 未正确加载 Skill
+- Agent/Trae 未正确加载 Skill
 
 ---
 
@@ -1233,7 +1233,7 @@ docker info
 docker ps -a
 
 # 3. 网络状态
-docker network inspect devopsclaw-network
+docker network inspect devopsagent-network
 
 # 4. 卷状态
 docker volume ls
@@ -1248,8 +1248,8 @@ docker volume ls
 docker-compose down
 
 # 2. 清理数据 (谨慎操作!)
-# docker volume rm devopsclaw_jenkins-home
-# docker volume rm devopsclaw_openclaw-data
+# docker volume rm devopsagent_jenkins-home
+# docker volume rm devopsagent_agent-data
 
 # 3. 清理状态文件
 del .self-heal-state.json
@@ -1295,13 +1295,13 @@ jenkins-jobs --conf jjb-configs/jenkins_jobs.ini update jjb-configs/
 | v1.0.0 | - | Bridge 服务 + 创建新 Job |
 | v2.0.0 | - | Bridge 服务 + JJB 更新原 Job + 高度自治 |
 | v3.0.0 | 2026-05-06 | Docker Compose 编排 + 独立 PostgreSQL/Redis + GitLab |
-| **v4.0.0** | **2026-05-06** | **OpenClaw Skill 架构 + GitLab 内置数据库** |
+| **v4.0.0** | **2026-05-06** | **Agent Skill 架构 + GitLab 内置数据库** |
 
 ### B. 服务端口清单
 
 | 服务 | 端口 | 绑定地址 | 说明 |
 |------|------|---------|------|
-| OpenClaw | 18789 | 127.0.0.1 | AI 网关 |
+| Agent | 18789 | 127.0.0.1 | AI 网关 |
 | Jenkins | 8081 | 127.0.0.1 | Web UI |
 | Jenkins | 50000 | 127.0.0.1 | Agent 连接 |
 | GitLab | 8082 | 127.0.0.1 | HTTP |
@@ -1312,7 +1312,7 @@ jenkins-jobs --conf jjb-configs/jenkins_jobs.ini update jjb-configs/
 ### C. 目录结构
 
 ```
-DevOpsClaw/
+DevOpsAgent/
 ├── .trae/
 │   └── skills/
 │       └── ci-selfheal/           # CI Self-Heal Skill

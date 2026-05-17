@@ -60,8 +60,8 @@ create_ssl_dir() {
 generate_certificates() {
     log_step "生成自签名 SSL 证书"
     
-    local cert_file="$SSL_DIR/devopsclaw.crt"
-    local key_file="$SSL_DIR/devopsclaw.key"
+    local cert_file="$SSL_DIR/devopsagent.crt"
+    local key_file="$SSL_DIR/devopsagent.key"
     local days=3650
     
     # 检查配置文件是否存在
@@ -99,7 +99,7 @@ generate_certificates() {
 show_cert_info() {
     log_step "证书信息"
     
-    local cert_file="$SSL_DIR/devopsclaw.crt"
+    local cert_file="$SSL_DIR/devopsagent.crt"
     
     echo
     openssl x509 -in "$cert_file" -noout -subject -dates -ext subjectAltName
@@ -112,8 +112,8 @@ print_instructions() {
     
     echo
     echo -e "${CYAN}【证书文件位置】${NC}"
-    echo "  证书: $SSL_DIR/devopsclaw.crt"
-    echo "  私钥: $SSL_DIR/devopsclaw.key"
+    echo "  证书: $SSL_DIR/devopsagent.crt"
+    echo "  私钥: $SSL_DIR/devopsagent.key"
     echo
     echo -e "${CYAN}【Docker Compose 配置】${NC}"
     echo "  证书会自动挂载到 Nginx 容器的 /etc/nginx/ssl/ 目录"

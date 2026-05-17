@@ -9,9 +9,9 @@ prompt = no
 C = CN
 ST = Beijing
 L = Beijing
-O = DevOpsClaw
+O = DevOpsAgent
 OU = DevOps
-CN = devopsclaw.local
+CN = devopsagent.local
 
 [v3_ext]
 subjectKeyIdentifier = hash
@@ -21,8 +21,8 @@ keyUsage = digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment, 
 subjectAltName = @alt_names
 
 [alt_names]
-DNS.1 = devopsclaw.local
-DNS.2 = *.devopsclaw.local
+DNS.1 = devopsagent.local
+DNS.2 = *.devopsagent.local
 DNS.3 = localhost
 IP.1 = 127.0.0.1
 IP.2 = 10.67.167.53

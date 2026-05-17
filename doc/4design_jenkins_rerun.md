@@ -35,21 +35,21 @@ pipeline {
 
 ---
 
-#### 问题 2：OpenClaw HTTP API 404 错误
+#### 问题 2：Agent HTTP API 404 错误
 **现象**：
 ```bash
 curl -X POST http://127.0.0.1:18789/api/v1/pipeline/result
 # 返回：404 Not Found
 ```
 
-**原因**：OpenClaw Gateway 没有实现标准的 OpenAI API 端点 `/v1/chat/completions`，也没有自定义的 `/api/v1/pipeline/result` 端点。
+**原因**：Agent Gateway 没有实现标准的 OpenAI API 端点 `/v1/chat/completions`，也没有自定义的 `/api/v1/pipeline/result` 端点。
 
 **解决方案**：
-放弃 HTTP API 调用方式，改用 **OpenClaw CLI** 直接调用：
+放弃 HTTP API 调用方式，改用 **Agent CLI** 直接调用：
 
 ```bash
 # 正确的 CLI 调用方式
-docker exec openclaw node openclaw.mjs infer model run \
+docker exec agent node agent.mjs infer model run \
   --model "custom-api-moonshot-cn/kimi-k2.5" \
   --prompt "你的提示词"
 ```
@@ -63,11 +63,11 @@ docker exec openclaw node openclaw.mjs infer model run \
 
 #### 问题 3：Docker 容器间网络隔离
 **现象**：
-- Jenkins 容器无法访问 OpenClaw 的 18789 端口
+- Jenkins 容器无法访问 Agent 的 18789 端口
 - `curl http://127.0.0.1:18789/health` 在宿主机成功，在 Jenkins 容器内失败
 
 **原因**：
-- OpenClaw 使用 `host` 网络模式（直接使用宿主机网络栈）
+- Agent 使用 `host` 网络模式（直接使用宿主机网络栈）
 - Jenkins 使用 `bridge` 网络模式（独立的容器网络）
 - 容器间无法通过 `localhost` 或 `127.0.0.1` 互通
 
@@ -84,15 +84,15 @@ docker exec openclaw node openclaw.mjs infer model run \
 2. **配置说明**：
    | 服务 | 容器内访问地址 | 说明 |
    |------|---------------|------|
-   | OpenClaw Gateway | `http://192.168.43.17:18789` | 宿主机 IP + 端口 |
+   | Agent Gateway | `http://192.168.43.17:18789` | 宿主机 IP + 端口 |
    | Bridge 服务 | `http://192.168.43.17:5000` | 宿主机 IP + 端口 |
 
 ---
 
-#### 问题 4：OpenClaw CLI 调用超时
+#### 问题 4：Agent CLI 调用超时
 **现象**：
 ```
-Command '['docker', 'exec', 'openclaw', ...]' timed out after 120 seconds
+Command '['docker', 'exec', 'agent', ...]' timed out after 120 seconds
 ```
 
 **原因**：AI 模型推理需要时间，特别是 DeepSeek Reasoner 推理时间较长。
@@ -187,7 +187,7 @@ for model in models_to_try:
 | 1 | `example-failure-pipeline` | #21 | ❌ FAILURE | `date--: not found` |
 | 2 | Webhook 发送到 Bridge | - | ✅ 200 | `action: fix_triggered` |
 | 3 | Bridge 调用 DeepSeek | - | ✅ 成功 | 生成修复代码 |
-| 4 | Bridge 创建修复 Job | - | ✅ 成功 | `example-failure-pipeline-openclaw-fix-1` |
+| 4 | Bridge 创建修复 Job | - | ✅ 成功 | `example-failure-pipeline-agent-fix-1` |
 | 5 | 修复 Job 自动构建 | #1 | ✅ SUCCESS | `+ date` |
 
 **修复对比**：
@@ -217,9 +217,9 @@ Sat May  2 09:45:33 UTC 2026
 
 **影响**：可能导致 Bridge 对修复 Job 的构建结果进行重复处理。
 
-**临时解决方案**：在 Bridge 中通过 Job 名称后缀 `-openclaw-fix-*` 识别修复 Job。
+**临时解决方案**：在 Bridge 中通过 Job 名称后缀 `-agent-fix-*` 识别修复 Job。
 
-**长期解决方案**：修改 `create_jenkins_job` 函数，在创建 Job 时正确设置 `OPENCLAW_MARKER` 环境变量。
+**长期解决方案**：修改 `create_jenkins_job` 函数，在创建 Job 时正确设置 `AGENT_MARKER` 环境变量。
 
 ---
 
@@ -234,16 +234,16 @@ Sat May  2 09:45:33 UTC 2026
 
 **Systemd 配置示例**（待实施）：
 ```ini
-# /etc/systemd/system/openclaw-bridge.service
+# /etc/systemd/system/agent-bridge.service
 [Unit]
-Description=OpenClaw Jenkins Bridge
+Description=Agent Jenkins Bridge
 After=network.target
 
 [Service]
 Type=simple
 User=worker
-WorkingDirectory=/home/worker/software/AI/CICD/openclaw
-EnvironmentFile=/home/worker/software/AI/CICD/openclaw/.env
+WorkingDirectory=/home/worker/software/AI/CICD/agent
+EnvironmentFile=/home/worker/software/AI/CICD/agent/.env
 ExecStart=/usr/bin/python3 bridge_v2.py
 Restart=always
 RestartSec=10
@@ -302,7 +302,7 @@ match = re.search(pattern, ai_output, re.DOTALL)
 
 #### 关键成功因素
 
-1. **Bridge 架构设计正确**：作为独立服务解耦 Jenkins 和 OpenClaw，避免直接依赖
+1. **Bridge 架构设计正确**：作为独立服务解耦 Jenkins 和 Agent，避免直接依赖
 2. **多模型 fallback**：Kimi 失败时自动切换到 DeepSeek，保证服务可用性
 3. **DRY_RUN 模式**：先验证再自动化，降低风险
 4. **详细的日志记录**：便于问题排查和流程验证
@@ -311,7 +311,7 @@ match = re.search(pattern, ai_output, re.DOTALL)
 
 | 技术方案 | 验证结果 | 说明 |
 |---------|---------|------|
-| OpenClaw CLI | ✅ 可行 | 比 HTTP API 更稳定可靠 |
+| Agent CLI | ✅ 可行 | 比 HTTP API 更稳定可靠 |
 | DeepSeek Reasoner | ✅ 推荐 | 推理质量高，响应稳定 |
 | Kimi K2.5 | ⚠️ 备用 | 偶有失败，作为 fallback |
 | Bridge 独立服务 | ✅ 正确 | 解耦双方，灵活可控 |
@@ -333,8 +333,8 @@ match = re.search(pattern, ai_output, re.DOTALL)
 
 
 
-openclaw skills install jenkins
-openclaw skills info jenkins
+agent skills install jenkins
+agent skills info jenkins
 
 
 export JENKINS_URL="http://localhost:8081"

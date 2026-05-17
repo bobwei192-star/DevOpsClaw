@@ -40,11 +40,11 @@
                   buildNumber: env.BUILD_NUMBER,
                   status: currentBuild.currentResult,
                   buildTag: env.BUILD_TAG,
-                  isOpenclaw: false,
+                  isAgent: false,
                   retryCount: 0
                 ]
                 
-                def bridgeUrl = env.BRIDGE_URL ?: 'http://devopsclaw-bridge:5000'
+                def bridgeUrl = env.BRIDGE_URL ?: 'http://devopsagent-bridge:5000'
                 
                 sh """
                   curl -s -X POST \\

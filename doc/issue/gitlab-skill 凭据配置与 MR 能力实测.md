@@ -2,7 +2,7 @@
 
 ## 背景
 
-在 `devopsclaw-openclaw` 容器内，对当前安装的 `gitlab-skill` 做了实际验证，目标是确认三件事：
+在 `devopsagent-agent` 容器内，对当前安装的 `gitlab-skill` 做了实际验证，目标是确认三件事：
 
 1. GitLab 凭据到底应该写到哪里，skill 才能真正读到
 2. `gitlab-skill` 是否能正常创建分支
@@ -12,9 +12,9 @@
 
 ## 结论摘要
 
-### 结论 1：当前环境下，`gitlab-skill` 生效配置不是 `openclaw.json`，而是 `~/.claude/gitlab_config.json`
+### 结论 1：当前环境下，`gitlab-skill` 生效配置不是 `agent.json`，而是 `~/.claude/gitlab_config.json`
 
-在 OpenClaw 容器内，下面这种配置能够真正使能 `gitlab-skill`：
+在 Agent 容器内，下面这种配置能够真正使能 `gitlab-skill`：
 
 ```bash
 mkdir -p ~/.claude
@@ -30,8 +30,8 @@ chmod 600 ~/.claude/gitlab_config.json
 实测中，单纯检查：
 
 ```bash
-cat /home/node/.openclaw/openclaw.json | grep mcpServers
-cat /home/node/.openclaw/openclaw.json | grep GITLAB_URL
+cat /home/node/.agent/agent.json | grep mcpServers
+cat /home/node/.agent/agent.json | grep GITLAB_URL
 ```
 
 没有输出，**并不代表当前安装的 `gitlab-skill` 一定没配置成功**。  
@@ -44,7 +44,7 @@ cat /home/node/.openclaw/openclaw.json | grep GITLAB_URL
 先验证项目搜索：
 
 ```bash
-python3 /home/node/.openclaw/workspace/skills/gitlab-skill/scripts/gitlab_api.py projects --search test
+python3 /home/node/.agent/workspace/skills/gitlab-skill/scripts/gitlab_api.py projects --search test
 ```
 
 实测可以列出项目，其中包含：
@@ -68,7 +68,7 @@ curl -s --header "PRIVATE-TOKEN: glpat-your-token" \
 再执行创建分支：
 
 ```bash
-python3 /home/node/.openclaw/workspace/skills/gitlab-skill/scripts/gitlab_api.py create-branch \
+python3 /home/node/.agent/workspace/skills/gitlab-skill/scripts/gitlab_api.py create-branch \
   --project "ci/test" \
   --branch "test-branch-cli" \
   --branch-ref "main"
@@ -119,7 +119,7 @@ curl -X POST "http://10.67.167.53:8088/api/v4/projects/27/merge_requests" \
 实测中，下面这种写法不能稳定拿到项目 ID：
 
 ```bash
-python3 /home/node/.openclaw/workspace/skills/gitlab-skill/scripts/gitlab_api.py projects --search test --format json | grep -o '"id":[0-9]*' | head -1
+python3 /home/node/.agent/workspace/skills/gitlab-skill/scripts/gitlab_api.py projects --search test --format json | grep -o '"id":[0-9]*' | head -1
 ```
 
 原因通常有两种：

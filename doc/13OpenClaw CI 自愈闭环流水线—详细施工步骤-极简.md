@@ -1,8 +1,8 @@
-# OpenClaw CI 自愈闭环流水线 — 一步一步部署指南
+# Agent CI 自愈闭环流水线 — 一步一步部署指南
 
 > **版本**: v4.0  
 > **日期**: 2026-05-12  
-> **目标**: 从零开始，在 OpenClaw 容器内部署 `ci-selfheal` Skill，实现 Jenkins 失败 → 自动抓日志 → AI 诊断 → 创建 fix 分支 → 触发重建 → 自动提 MR，最多重试 5 轮，全程零人工干预。
+> **目标**: 从零开始，在 Agent 容器内部署 `ci-selfheal` Skill，实现 Jenkins 失败 → 自动抓日志 → AI 诊断 → 创建 fix 分支 → 触发重建 → 自动提 MR，最多重试 5 轮，全程零人工干预。
 
 ---
 
@@ -23,7 +23,7 @@ Jenkins 发 Webhook ──▶ ci-selfheal 收到通知
 ② 拉取 Jenkins 构建日志（脱敏掉 token/IP）
       │
       ▼
-③ 调用 openclaw agent（底层用 DeepSeek）做 AI 诊断
+③ 调用 agent agent（底层用 DeepSeek）做 AI 诊断
       │ 返回: { root_cause, fix_diff, confidence }
       │
       ▼
@@ -39,7 +39,7 @@ Jenkins 发 Webhook ──▶ ci-selfheal 收到通知
                         └── 5 轮全挂 ──▶ 熔断 + 通知人工
 ```
 
-**核心原则**：Jenkins 只当工具（负责构建），OpenClaw 做决策（诊断 + 调度），人工仅在熔断后介入。
+**核心原则**：Jenkins 只当工具（负责构建），Agent 做决策（诊断 + 调度），人工仅在熔断后介入。
 
 ---
 
@@ -48,37 +48,37 @@ Jenkins 发 Webhook ──▶ ci-selfheal 收到通知
 ### 1.1 进容器
 
 ```bash
-docker exec -it devopsclaw-openclaw bash
+docker exec -it devopsagent-agent bash
 ```
 
 之后所有命令都在容器内执行。
 
-### 1.2 确认 OpenClaw CLI 可用
+### 1.2 确认 Agent CLI 可用
 
 ```bash
-openclaw --version
+agent --version
 ```
 
 预期输出：版本号，无报错。
 
 ### 1.3 理解容器网络拓扑
 
-所有容器都在同一个 Docker 网络 `devopsclaw-network` 上：
+所有容器都在同一个 Docker 网络 `devopsagent-network` 上：
 
 | 容器 | 内网 IP | 端口 | 说明 |
 |------|---------|------|------|
-| `devopsclaw-nginx` | DNS 名 `devopsclaw-nginx` | `8440`→Jenkins、`8441`→GitLab、`8442`→OpenClaw | **容器间通信的统一入口** |
-| `devopsclaw-jenkins` | 容器名 `devopsclaw-jenkins` | `8080` | Jenkins 内部 HTTP |
-| `devopsclaw-gitlab` | 容器名 `devopsclaw-gitlab` | `80` | GitLab 内部 HTTP |
-| `devopsclaw-openclaw` | `172.19.0.3`（可能漂移） | `18789` | OpenClaw API |
+| `devopsagent-nginx` | DNS 名 `devopsagent-nginx` | `8440`→Jenkins、`8441`→GitLab、`8442`→Agent | **容器间通信的统一入口** |
+| `devopsagent-jenkins` | 容器名 `devopsagent-jenkins` | `8080` | Jenkins 内部 HTTP |
+| `devopsagent-gitlab` | 容器名 `devopsagent-gitlab` | `80` | GitLab 内部 HTTP |
+| `devopsagent-agent` | `172.19.0.3`（可能漂移） | `18789` | Agent API |
 
-> ⚠️ **重要**：容器间通信走 nginx HTTPS（`devopsclaw-nginx:844x`），**用 Docker DNS 名而非 IP**（容器重建后 IP 会变，DNS 名不变）。**不要用** `172.19.0.1:184xx`（那是宿主机网关，WSL 重启后偶发不通）。
+> ⚠️ **重要**：容器间通信走 nginx HTTPS（`devopsagent-nginx:844x`），**用 Docker DNS 名而非 IP**（容器重建后 IP 会变，DNS 名不变）。**不要用** `172.19.0.1:184xx`（那是宿主机网关，WSL 重启后偶发不通）。
 
 ### 1.4 确认 Jenkins 连通性（通过 nginx HTTPS）
 
 ```bash
-baseDir="/home/node/.openclaw/workspace/skills/jenkins"
-export JENKINS_URL="https://devopsclaw-nginx:8440/jenkins"
+baseDir="/home/node/.agent/workspace/skills/jenkins"
+export JENKINS_URL="https://devopsagent-nginx:8440/jenkins"
 export JENKINS_USER="zx"
 export JENKINS_API_TOKEN="11e9fec81c11241d5a3897ab45608c6851"
 export NODE_TLS_REJECT_UNAUTHORIZED=0
@@ -94,7 +94,7 @@ node ${baseDir}/scripts/jenkins.mjs jobs
 export GITLAB_TOKEN="glpat-86x2pYV78K_2MMCZXc9RE286MQp1OjEH.01.0w1fpvejn"
 
 curl -k -s -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-  "https://devopsclaw-nginx:8441/api/v4/user"
+  "https://devopsagent-nginx:8441/api/v4/user"
 ```
 
 **预期输出**：返回用户信息 JSON（含 `id`、`username`、`name` 等）。
@@ -104,7 +104,7 @@ curl -k -s -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
 ### 1.5 确认已安装的 Skill
 
 ```bash
-ls /home/node/.openclaw/workspace/skills/
+ls /home/node/.agent/workspace/skills/
 ```
 
 预期至少有以下 Skill（这是我们依赖的）：
@@ -130,19 +130,19 @@ ls /home/node/.openclaw/workspace/skills/
 | 系统快照 | CPU、内存、磁盘、端口一次性快照 | ❌ |
 
 ```bash
-docker exec -it devopsclaw-openclaw bash
-openclaw skills install tkuehnl/agentic-devops
+docker exec -it devopsagent-agent bash
+agent skills install tkuehnl/agentic-devops
 ```
 
 > **组合建议**：`ci-selfheal` 处理 Jenkins Pipeline 层面的失败（编译错误、Shell 语法），`agentic-devops` 处理基础设施层面的诊断（容器挂了、CPU 爆了）。两者配合覆盖从基础设施到 CI Pipeline 的全栈自愈。
 
 ### 1.7 安装 gitlab-skill + 凭据配置（实测有效方案）
 
-> ⚠️ **注意**：以下命令都在**容器内**执行。所有 `openclaw` 命令如果在宿主机跑会连到另一套环境（宿主机没有安装这些 Skill）。
+> ⚠️ **注意**：以下命令都在**容器内**执行。所有 `agent` 命令如果在宿主机跑会连到另一套环境（宿主机没有安装这些 Skill）。
 
 ```bash
-docker exec -it devopsclaw-openclaw bash
-openclaw skills install gitlab-skill
+docker exec -it devopsagent-agent bash
+agent skills install gitlab-skill
 ```
 
 **Step 1：创建 `~/.claude/gitlab_config.json`（这是 gitlab-skill 真正读取的凭据文件）**：
@@ -153,7 +153,7 @@ openclaw skills install gitlab-skill
 mkdir -p ~/.claude
 cat > ~/.claude/gitlab_config.json << 'EOF'
 {
-  "host": "https://devopsclaw-nginx:8441",
+  "host": "https://devopsagent-nginx:8441",
   "access_token": "glpat-86x2pYV78K_2MMCZXc9RE286MQp1OjEH.01.0w1fpvejn"
 }
 EOF
@@ -161,14 +161,14 @@ chmod 600 ~/.claude/gitlab_config.json
 ```
 
 > **不同环境对应不同的 `host` 值**：
-> - 本地 Docker 环境：`"host": "https://devopsclaw-nginx:8441"`
+> - 本地 Docker 环境：`"host": "https://devopsagent-nginx:8441"`
 > - 跨主机直连 GitLab：`"host": "http://10.67.167.53:8088"`
 
 **Step 2：验证分支创建能力（gitlab-skill CLI）**：
 
 ```bash
-python3 /home/node/.openclaw/workspace/skills/gitlab-skill/scripts/gitlab_api.py projects --search test
-python3 /home/node/.openclaw/workspace/skills/gitlab-skill/scripts/gitlab_api.py create-branch \
+python3 /home/node/.agent/workspace/skills/gitlab-skill/scripts/gitlab_api.py projects --search test
+python3 /home/node/.agent/workspace/skills/gitlab-skill/scripts/gitlab_api.py create-branch \
   --project "root/model_test" \
   --branch "test-branch-cli" \
   --branch-ref "main"
@@ -183,7 +183,7 @@ python3 /home/node/.openclaw/workspace/skills/gitlab-skill/scripts/gitlab_api.py
 ```bash
 GITLAB_TOKEN="glpat-imZiYsNETLhKnLsIsOkEwG86MQp1OnoH.01.0w0rr1066"
 curl -s -k --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-  "https://devopsclaw-nginx:8441/api/v4/projects?search=model_test" \
+  "https://devopsagent-nginx:8441/api/v4/projects?search=model_test" \
   | python3 -m json.tool | grep -B 2 '"path_with_namespace"' | head -5
 ```
 
@@ -191,7 +191,7 @@ curl -s -k --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
 
 ```bash
 PROJECT_ID="<上一步获取的 ID>"
-curl -s -k -X POST "https://devopsclaw-nginx:8441/api/v4/projects/${PROJECT_ID}/merge_requests" \
+curl -s -k -X POST "https://devopsagent-nginx:8441/api/v4/projects/${PROJECT_ID}/merge_requests" \
   --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
   --data-urlencode "source_branch=test-branch-cli" \
   --data-urlencode "target_branch=main" \
@@ -206,7 +206,7 @@ curl -s -k -X POST "https://devopsclaw-nginx:8441/api/v4/projects/${PROJECT_ID}/
 ### 1.8 确认 AI 模型可用
 
 ```bash
-openclaw agent --agent main --message "Hello, 1+1=?" --json
+agent agent --agent main --message "Hello, 1+1=?" --json
 ```
 
 预期：返回 JSON 格式的回复，内容包含 "2"。如果超时或报错，检查 DeepSeek API Key 是否配置正确。
@@ -221,7 +221,7 @@ openclaw agent --agent main --message "Hello, 1+1=?" --json
 
 ## 2. 安装 Python 依赖（容器内没有 pip 怎么办？）
 
-你的 OpenClaw 容器是一个**重度裁剪的 Debian 环境**：没有 pip、没有 venv、`/app` 只读、`~/.local` 只读。唯一可写的位置是 `/tmp`。
+你的 Agent 容器是一个**重度裁剪的 Debian 环境**：没有 pip、没有 venv、`/app` 只读、`~/.local` 只读。唯一可写的位置是 `/tmp`。
 
 ### 2.1 确认当前环境
 
@@ -238,7 +238,7 @@ touch /tmp/test-write && rm /tmp/test-write && echo "/tmp 可写 ✅"
 我们已经把安装逻辑写进了 `install.sh`，直接执行：
 
 ```bash
-cd /home/node/.openclaw/workspace/skills/ci-selfheal
+cd /home/node/.agent/workspace/skills/ci-selfheal
 bash install.sh
 ```
 
@@ -277,13 +277,13 @@ PYTHONPATH="/tmp/selfheal-deps:$(pwd)" python3 -c "import yaml; import requests;
 `ci-selfheal` 的全部文件已经在你 Windows 宿主机上准备好了，路径是：
 
 ```
-C:\Users\Tong\Desktop\DevOpsClaw\openclaw-skill-ci-selfheal\
+C:\Users\Tong\Desktop\DevOpsAgent\agent-skill-ci-selfheal\
 ```
 
 容器内需要的路径是：
 
 ```
-/home/node/.openclaw/workspace/skills/ci-selfheal/
+/home/node/.agent/workspace/skills/ci-selfheal/
 ```
 
 ### 3.2 将文件拷贝进容器
@@ -293,7 +293,7 @@ C:\Users\Tong\Desktop\DevOpsClaw\openclaw-skill-ci-selfheal\
 在 **宿主机 PowerShell** 中执行：
 
 ```powershell
-docker cp C:\Users\Tong\Desktop\DevOpsClaw\openclaw-skill-ci-selfheal\. devopsclaw-openclaw:/home/node/.openclaw/workspace/skills/ci-selfheal/
+docker cp C:\Users\Tong\Desktop\DevOpsAgent\agent-skill-ci-selfheal\. devopsagent-agent:/home/node/.agent/workspace/skills/ci-selfheal/
 ```
 
 **方式 B：在容器内手动创建，然后粘贴文件内容**
@@ -301,8 +301,8 @@ docker cp C:\Users\Tong\Desktop\DevOpsClaw\openclaw-skill-ci-selfheal\. devopscl
 如果 docker cp 不可用，则逐个文件手动写入：
 
 ```bash
-docker exec -it devopsclaw-openclaw bash
-mkdir -p /home/node/.openclaw/workspace/skills/ci-selfheal/scripts
+docker exec -it devopsagent-agent bash
+mkdir -p /home/node/.agent/workspace/skills/ci-selfheal/scripts
 ```
 
 然后用 `cat > file << 'EOF' ... EOF` 的方式写入每个文件。
@@ -310,7 +310,7 @@ mkdir -p /home/node/.openclaw/workspace/skills/ci-selfheal/scripts
 ### 3.3 验证文件完整性
 
 ```bash
-cd /home/node/.openclaw/workspace/skills/ci-selfheal
+cd /home/node/.agent/workspace/skills/ci-selfheal
 ls -la
 ```
 
@@ -367,7 +367,7 @@ jenkins:
 
 # ===== GitLab 连接 =====
 gitlab:
-  url: "https://devopsclaw-nginx:8441"        # ← nginx → GitLab（容器 DNS 名，重建不变）
+  url: "https://devopsagent-nginx:8441"        # ← nginx → GitLab（容器 DNS 名，重建不变）
   token_env: "GITLAB_TOKEN"             # ← 环境变量名
   host_env: "GITLAB_HOST"               # ← GitLab 地址环境变量名
 
@@ -403,14 +403,14 @@ notify:
 创建 `.env` 文件（在 `ci-selfheal/` 目录下）：
 
 ```bash
-cat > /home/node/.openclaw/workspace/skills/ci-selfheal/.env << 'EOF'
+cat > /home/node/.agent/workspace/skills/ci-selfheal/.env << 'EOF'
 # ===== Jenkins 连接（全部从环境变量读取） =====
-export JENKINS_URL="https://devopsclaw-nginx:8440/jenkins"
+export JENKINS_URL="https://devopsagent-nginx:8440/jenkins"
 export JENKINS_USER="zx"
 export JENKINS_API_TOKEN="11e9fec81c11241d5a3897ab45608c6851"
 
 # ===== GitLab 连接 =====
-export GITLAB_HOST="https://devopsclaw-nginx:8441"
+export GITLAB_HOST="https://devopsagent-nginx:8441"
 export GITLAB_TOKEN="glpat-imZiYsNETLhKnLsIsOkEwG86MQp1OnoH.01.0w0rr1066"
 
 # ===== 可选：钉钉通知 =====
@@ -429,7 +429,7 @@ EOF
 ### 5.1 测试：信息收集（拉取 Jenkins 日志）
 
 ```bash
-cd /home/node/.openclaw/workspace/skills/ci-selfheal
+cd /home/node/.agent/workspace/skills/ci-selfheal
 source .env
 PYTHONPATH="/tmp/selfheal-deps:$(pwd)" python3 -c "
 from scripts.orchestrator import Orchestrator
@@ -448,7 +448,7 @@ print(log[:300])
 ### 5.2 测试：AI 诊断
 
 ```bash
-cd /home/node/.openclaw/workspace/skills/ci-selfheal
+cd /home/node/.agent/workspace/skills/ci-selfheal
 source .env
 PYTHONPATH="/tmp/selfheal-deps:$(pwd)" python3 -c "
 from scripts.orchestrator import Orchestrator
@@ -467,10 +467,10 @@ print(json.dumps(result, indent=2, ensure_ascii=False))
 ### 5.3 测试：GitLab 操作
 
 ```bash
-export GITLAB_HOST="https://devopsclaw-nginx:8441"
+export GITLAB_HOST="https://devopsagent-nginx:8441"
 export GITLAB_TOKEN="glpat-imZiYsNETLhKnLsIsOkEwG86MQp1OnoH.01.0w0rr1066"
 
-openclaw agent --agent main --message "使用 gitlab-skill 在仓库 root/model_test 列出所有分支" --json
+agent agent --agent main --message "使用 gitlab-skill 在仓库 root/model_test 列出所有分支" --json
 ```
 
 **预期**：返回分支列表。如果没有 `model_test` 仓库，替换为你在 GitLab 上实际存在的仓库。
@@ -478,8 +478,8 @@ openclaw agent --agent main --message "使用 gitlab-skill 在仓库 root/model_
 ### 5.4 测试：Jenkins 构建触发
 
 ```bash
-baseDir="/home/node/.openclaw/workspace/skills/jenkins"
-export JENKINS_URL="https://devopsclaw-nginx:8440/jenkins"
+baseDir="/home/node/.agent/workspace/skills/jenkins"
+export JENKINS_URL="https://devopsagent-nginx:8440/jenkins"
 export JENKINS_USER="zx"
 export JENKINS_API_TOKEN="11e9fec81c11241d5a3897ab45608c6851"
 export NODE_TLS_REJECT_UNAUTHORIZED=0
@@ -495,7 +495,7 @@ node ${baseDir}/scripts/jenkins.mjs build --job "example_fauliure_job"
 启动 Webhook 监听器（前台模式，方便观察日志）：
 
 ```bash
-cd /home/node/.openclaw/workspace/skills/ci-selfheal
+cd /home/node/.agent/workspace/skills/ci-selfheal
 source .env
 PYTHONPATH="/tmp/selfheal-deps:$(pwd)" python3 -m scripts.webhook_listener --host 0.0.0.0 --port 8080
 ```
@@ -536,7 +536,7 @@ curl -X POST http://localhost:8080/webhook/ci-failure \
 ### 6.1 后台运行
 
 ```bash
-cd /home/node/.openclaw/workspace/skills/ci-selfheal
+cd /home/node/.agent/workspace/skills/ci-selfheal
 source .env
 nohup env PYTHONPATH="/tmp/selfheal-deps:$(pwd)" python3 -m scripts.webhook_listener --host 0.0.0.0 --port 8080 > selfheal.log 2>&1 &
 echo "PID: $!"
@@ -562,13 +562,13 @@ curl -s http://localhost:8080/health | python3 -m json.tool
 ### 6.3 查看实时日志
 
 ```bash
-tail -f /home/node/.openclaw/workspace/skills/ci-selfheal/selfheal.log
+tail -f /home/node/.agent/workspace/skills/ci-selfheal/selfheal.log
 ```
 
 ### 6.4 查看自愈状态
 
 ```bash
-cd /home/node/.openclaw/workspace/skills/ci-selfheal
+cd /home/node/.agent/workspace/skills/ci-selfheal
 source .env
 PYTHONPATH="/tmp/selfheal-deps:$(pwd)" python3 bin/ci-selfheal status
 ```
@@ -582,7 +582,7 @@ cat >> ~/.bashrc << 'EOF'
 
 # === ci-selfheal auto-start ===
 if ! pgrep -f "scripts.webhook_listener" > /dev/null; then
-  cd /home/node/.openclaw/workspace/skills/ci-selfheal
+  cd /home/node/.agent/workspace/skills/ci-selfheal
   source .env
   nohup env PYTHONPATH="/tmp/selfheal-deps:$(pwd)" python3 -m scripts.webhook_listener --host 0.0.0.0 --port 8080 > selfheal.log 2>&1 &
   echo "[ci-selfheal] Webhook listener started"
@@ -600,18 +600,18 @@ EOF
 
 | 目标服务 | 容器内访问地址 | 验证结果 |
 |---------|---------------|---------|
-| **Jenkins API** | `https://devopsclaw-nginx:8440/jenkins/api/json` | ✅ 403（需 API Token） |
+| **Jenkins API** | `https://devopsagent-nginx:8440/jenkins/api/json` | ✅ 403（需 API Token） |
 | **Jenkins Skill** | `node jenkins.mjs jobs`（URL=同上） | ✅ 返回 Job 列表 |
-| **GitLab API** | `https://devopsclaw-nginx:8441/api/v4/user` | ✅ 401（Token 需确认） |
+| **GitLab API** | `https://devopsagent-nginx:8441/api/v4/user` | ✅ 401（Token 需确认） |
 
-> 这些地址走 nginx 容器 DNS 名（devopsclaw-nginx），**不使用**宿主机网关（172.19.0.1:184xx），容器重建后 IP 自动更新。
+> 这些地址走 nginx 容器 DNS 名（devopsagent-nginx），**不使用**宿主机网关（172.19.0.1:184xx），容器重建后 IP 自动更新。
 
-### 7.2 确认 OpenClaw 容器的 IP
+### 7.2 确认 Agent 容器的 IP
 
 Jenkins 需要知道往哪发 Webhook。在宿主机执行：
 
 ```powershell
-docker inspect devopsclaw-openclaw | Select-String "IPAddress"
+docker inspect devopsagent-agent | Select-String "IPAddress"
 ```
 
 或者在容器内：
@@ -709,7 +709,7 @@ curl -X POST http://localhost:8080/webhook/ci-failure \
 ### 8.3 观察流程
 
 ```bash
-tail -f /home/node/.openclaw/workspace/skills/ci-selfheal/selfheal.log
+tail -f /home/node/.agent/workspace/skills/ci-selfheal/selfheal.log
 ```
 
 你应该看到类似这样的日志序列：
@@ -763,7 +763,7 @@ tail -f /home/node/.openclaw/workspace/skills/ci-selfheal/selfheal.log
 | 现象 | 可能原因 | 排查命令 |
 |------|---------|---------|
 | `No module named 'yaml'` | 依赖未安装 | `ls /tmp/selfheal-deps/` 看有没有 `yaml/` |
-| `jenkins.mjs` 报 `ECONNREFUSED` | 用了宿主机网关 IP | 改用 nginx 容器 DNS 名 `https://devopsclaw-nginx:8440/jenkins`，详见 [容器间通信必须经过nginx-HTTPS](../doc/issue/容器间通信必须经过nginx-HTTPS.md) |
+| `jenkins.mjs` 报 `ECONNREFUSED` | 用了宿主机网关 IP | 改用 nginx 容器 DNS 名 `https://devopsagent-nginx:8440/jenkins`，详见 [容器间通信必须经过nginx-HTTPS](../doc/issue/容器间通信必须经过nginx-HTTPS.md) |
 | Agent 调用超时 | 日志太长或网络慢 | 减小 `poll_interval_sec`，日志只拉最后 200 行 |
 | Agent 返回非 JSON | Agent 输出了额外文本 | 检查 `agent_wrapper.py` 的 JSON 提取逻辑 |
 | GitLab 操作报 `401` | Token 过期或权限不足 | `curl -H "PRIVATE-TOKEN: $GITLAB_TOKEN" https://.../user` |
@@ -778,7 +778,7 @@ tail -f /home/node/.openclaw/workspace/skills/ci-selfheal/selfheal.log
 curl -s http://localhost:8080/health | python3 -m json.tool
 
 # 2. 看最近 5 次自愈记录
-cd /home/node/.openclaw/workspace/skills/ci-selfheal
+cd /home/node/.agent/workspace/skills/ci-selfheal
 cat .self-heal-state.json | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
@@ -802,7 +802,7 @@ curl http://localhost:8080/admin/reset
 
 # 5. 重启服务（注意顺序：先杀进程 → 清状态 → 再启动）
 pkill -f "scripts.webhook_listener"
-cd /home/node/.openclaw/workspace/skills/ci-selfheal
+cd /home/node/.agent/workspace/skills/ci-selfheal
 echo '{"version":"2.0.0","chains":{},"circuit_breaker":{}}' > .self-heal-state.json
 source .env
 nohup env PYTHONPATH="/tmp/selfheal-deps:$(pwd)" python3 -m scripts.webhook_listener --host 0.0.0.0 --port 8080 > selfheal.log 2>&1 &
@@ -815,20 +815,20 @@ nohup env PYTHONPATH="/tmp/selfheal-deps:$(pwd)" python3 -m scripts.webhook_list
 ```bash
 # ===== 服务管理 =====
 # 启动服务
-cd /home/node/.openclaw/workspace/skills/ci-selfheal && bash run.sh
+cd /home/node/.agent/workspace/skills/ci-selfheal && bash run.sh
 
 # 查看服务状态
 curl -s http://localhost:8080/health
 
 # 查看实时日志
-tail -f /home/node/.openclaw/workspace/skills/ci-selfheal/selfheal.log
+tail -f /home/node/.agent/workspace/skills/ci-selfheal/selfheal.log
 
 # 停止服务
 pkill -f "scripts.webhook_listener"
 
 # ===== 自愈状态 =====
 # 查看所有 Job 的自愈历史
-cd /home/node/.openclaw/workspace/skills/ci-selfheal
+cd /home/node/.agent/workspace/skills/ci-selfheal
 source .env
 PYTHONPATH="/tmp/selfheal-deps:$(pwd)" python3 bin/ci-selfheal status
 
@@ -845,7 +845,7 @@ PYTHONPATH="/tmp/selfheal-deps:$(pwd)" python3 bin/ci-selfheal orchestrate \
 
 # ===== 熔断管理 =====
 # 手动清除某个 Job 的熔断状态
-cd /home/node/.openclaw/workspace/skills/ci-selfheal
+cd /home/node/.agent/workspace/skills/ci-selfheal
 python3 -c "
 import json
 state = json.load(open('.self-heal-state.json'))

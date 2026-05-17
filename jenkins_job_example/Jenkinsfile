@@ -9,7 +9,7 @@ pipeline {
         stage('检出代码') {
             steps {
                 git branch: 'main',
-                    url: 'http://oauth2:glpat-86x2pYV78K_2MMCZXc9RE286MQp1OjEH.01.0w1fpvejn@devopsclaw-gitlab:80/ci/gitlab_repo_example.git'
+                    url: 'http://oauth2:glpat-86x2pYV78K_2MMCZXc9RE286MQp1OjEH.01.0w1fpvejn@devopsagent-gitlab:80/ci/gitlab_repo_example.git'
             }
         }
 
@@ -46,9 +46,9 @@ pipeline {
                     }
                 """.stripIndent().replaceAll('\n', ' ').trim()
                 
-                sh "curl -s -X POST http://devopsclaw-openclaw:8080/webhook/ci-failure -H 'Content-Type: application/json' -d '${payload}'"
+                sh "curl -s -X POST http://devopsagent-agent:8080/webhook/ci-failure -H 'Content-Type: application/json' -d '${payload}'"
             } else {
-                echo "自愈验证构建失败，跳过 webhook（BUILD_TYPE=selfheal，由 OpenClaw 轮询）"
+                echo "自愈验证构建失败，跳过 webhook（BUILD_TYPE=selfheal，由 Agent 轮询）"
             }
         }
     }

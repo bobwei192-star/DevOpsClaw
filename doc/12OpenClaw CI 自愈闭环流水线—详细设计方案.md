@@ -1,9 +1,9 @@
-# OpenClaw CI 自愈闭环流水线 — 详细设计方案
+# Agent CI 自愈闭环流水线 — 详细设计方案
 
 > **版本**: v2.0  
 > **日期**: 2026-05-10  
-> **配套文档**: [11OpenClaw CI 自愈闭环流水线—核心设计方案.md](./11OpenClaw%20CI%20%E8%87%AA%E6%84%88%E9%97%AD%E7%8E%AF%E6%B5%81%E6%B0%B4%E7%BA%BF%E2%80%94%E6%A0%B8%E5%BF%83%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88.md)  
-> **核心仓库**: `github.com/bobwei192-star/openclaw-skill-ci-selfheal`  
+> **配套文档**: [11Agent CI 自愈闭环流水线—核心设计方案.md](./11Agent%20CI%20%E8%87%AA%E6%84%88%E9%97%AD%E7%8E%AF%E6%B5%81%E6%B0%B4%E7%BA%BF%E2%80%94%E6%A0%B8%E5%BF%83%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88.md)  
+> **核心仓库**: `github.com/bobwei192-star/agent-skill-ci-selfheal`  
 > **文档属性**: 总体设计方案（不涉及具体实现代码与操作步骤）
 
 ---
@@ -664,7 +664,7 @@ Push 到远程仓库
 
 ```
 ┌─────────────────────────────────────────┐
-│           OpenClaw 容器                  │
+│           Agent 容器                  │
 │  ┌─────────────────────────────────┐    │
 │  │  ci-selfheal Skill              │    │
 │  │  ┌─────────┐  ┌─────────────┐   │    │
@@ -710,7 +710,7 @@ Push 到远程仓库
 
 | 密钥类型 | 存储方式 |
 |---------|---------|
-| Git Token | Vault / Secrets Manager / OpenClaw 内置 Secret 管理 |
+| Git Token | Vault / Secrets Manager / Agent 内置 Secret 管理 |
 | AI API Key | Vault / Secrets Manager，轮换策略 |
 | CI 凭证（Jenkins Token） | Vault / Secrets Manager |
 | 通知 Webhook URL | 加密存储，环境变量注入 |
@@ -755,16 +755,16 @@ Push 到远程仓库
 
 ---
 
-## 附录 A：`openclaw-skill-ci-selfheal` 详细设计分析
+## 附录 A：`agent-skill-ci-selfheal` 详细设计分析
 
-> 本附录对 `openclaw-skill-ci-selfheal`（后续发布至 OpenClaw Hub）进行模块级设计分析。
+> 本附录对 `agent-skill-ci-selfheal`（后续发布至 Agent Hub）进行模块级设计分析。
 > 聚焦各模块的职责边界、数据流转、状态管理、与外部 Skill 的集成方式，不涉及具体实现代码。
 
 ---
 
 ### A.1 Skill 整体定位
 
-`openclaw-skill-ci-selfheal` 是整个 CI 自愈闭环流水线的**编排中枢**。它不是一个大而全的单体，而是一个"胶水层" Skill，核心职责是将 14 个已有 OpenClaw Skill 的能力串联成一条完整的闭环链路。
+`agent-skill-ci-selfheal` 是整个 CI 自愈闭环流水线的**编排中枢**。它不是一个大而全的单体，而是一个"胶水层" Skill，核心职责是将 14 个已有 Agent Skill 的能力串联成一条完整的闭环链路。
 
 **设计原则**：
 | 原则 | 说明 |
@@ -773,17 +773,17 @@ Push 到远程仓库
 | 状态外置 | 自愈链路状态存于 `.self-heal-state.json`，断点可恢复 |
 | 只读约束 | JJB YAML 只读、不修改被分析项目的业务代码 |
 | 接口清晰 | 每个模块单一职责，输入/输出通过 dict 或文件传递 |
-| 可发布 | 符合 OpenClaw Skill 规范（`skill.toml` + `SKILL.md`），可一键安装 |
+| 可发布 | 符合 Agent Skill 规范（`skill.toml` + `SKILL.md`），可一键安装 |
 
 ---
 
 ### A.2 目录结构与模块划分
 
 ```
-openclaw-skill-ci-selfheal/
+agent-skill-ci-selfheal/
 │
 ├── SKILL.md                          # Skill 定义（触发条件 + 使用指南 + 依赖说明）
-├── skill.toml                        # OpenClaw 运行时 manifest（注册入口点与工具）
+├── skill.toml                        # Agent 运行时 manifest（注册入口点与工具）
 ├── LICENSE                           # 开源协议
 │
 ├── scripts/                          # 核心脚本模块（Python 实现）
@@ -809,11 +809,11 @@ openclaw-skill-ci-selfheal/
 
 #### A.3.1 `skill.toml` —— Skill 注册清单
 
-`skill.toml` 是 OpenClaw Skill 的入口配置文件，定义了 Skill 的元信息与可调用工具。
+`skill.toml` 是 Agent Skill 的入口配置文件，定义了 Skill 的元信息与可调用工具。
 
 | 配置项 | 说明 |
 |--------|------|
-| `name` | `ci-selfheal`，作为 `openclaw ci-selfheal` 命令前缀 |
+| `name` | `ci-selfheal`，作为 `agent ci-selfheal` 命令前缀 |
 | `version` | 语义化版本号，发布至 Hub 时递增 |
 | `description` | Skill 一句话描述，用于 Hub 展示 |
 | `tools.orchestrate` | 主编排入口，参数 `--job` + `--build` |
@@ -824,9 +824,9 @@ openclaw-skill-ci-selfheal/
 
 | 依赖 Skill | 用途 | 调用方式 |
 |-----------|------|---------|
-| `ci-monitor` + `jenkins` | 拉取构建日志与 Job 配置 | 编排器内通过 `openclaw` CLI 调用 |
-| `ci-cd-watchdog` | 日志预解析、根因定位 | 编排器内通过 `openclaw` CLI 调用 |
-| `cicd-pipeline` | CI/CD 流水线管理 | 编排器内通过 `openclaw` CLI 调用 |
+| `ci-monitor` + `jenkins` | 拉取构建日志与 Job 配置 | 编排器内通过 `agent` CLI 调用 |
+| `ci-cd-watchdog` | 日志预解析、根因定位 | 编排器内通过 `agent` CLI 调用 |
+| `cicd-pipeline` | CI/CD 流水线管理 | 编排器内通过 `agent` CLI 调用 |
 | `lint` + `security-auditor` | 修复代码质量与安全检查 | S3 阶段调用 |
 | `self-improve` + `capability-evolver-pro` | 失败模式记录与策略优化 | S4 阶段调用 |
 | `claw-summarize-pro` | 长日志摘要 | S1 阶段调用 |
@@ -836,13 +836,13 @@ openclaw-skill-ci-selfheal/
 
 #### A.3.2 `SKILL.md` —— Skill 定义文件
 
-SKILL.md 是 OpenClaw Hub 的 Skill 首页文档，向用户说明 Skill 的功能、用法与配置。
+SKILL.md 是 Agent Hub 的 Skill 首页文档，向用户说明 Skill 的功能、用法与配置。
 
 | 章节 | 内容要点 |
 |------|---------|
 | Description | CI 构建失败自动诊断→修复→重建的闭环自动化 |
-| Usage | `openclaw ci-selfheal orchestrate --job <job> --build <N>` |
-| Dependencies | 列出 9 个依赖 Skill（all installed in OpenClaw container） |
+| Usage | `agent ci-selfheal orchestrate --job <job> --build <N>` |
+| Dependencies | 列出 9 个依赖 Skill（all installed in Agent container） |
 | Configuration | 环境变量：`JENKINS_URL`、`JENKINS_USER`、`JENKINS_TOKEN`、`JJB_CONFIG_PATH`、`MAX_RETRY` |
 | State File | `.self-heal-state.json` 格式说明 |
 
@@ -1073,7 +1073,7 @@ Patch 文件 (patches/ 目录) —— 供人工审核后手动应用
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                     openclaw-skill-ci-selfheal 数据流                │
+│                     agent-skill-ci-selfheal 数据流                │
 └─────────────────────────────────────────────────────────────────────┘
 
 外部 CI Webhook
@@ -1096,7 +1096,7 @@ orchestrator.py
     │
     ├──▶ S2: diagnose(info)
     │       ├── ai_prompt_builder.build(info) ──▶ prompt (字符串)
-    │       ├── openclaw agent --model deepseek ──▶ ai_response (字符串)
+    │       ├── agent agent --model deepseek ──▶ ai_response (字符串)
     │       └── _extract_dsl(ai_response) ──▶ dsl (字符串 | None)
     │
     ├──▶ S3: 四分支决策
@@ -1132,18 +1132,18 @@ orchestrator.py
 
 ---
 
-### A.6 OpenClaw Hub 发布设计
+### A.6 Agent Hub 发布设计
 
 **发布流程**：
 
 | 步骤 | 说明 |
 |------|------|
 | 1. 版本管理 | 按语义化版本（SemVer）管理 `skill.toml` 中的 version 字段 |
-| 2. 目录规范 | 符合 OpenClaw Skill 标准目录结构（SKILL.md + skill.toml + scripts/） |
+| 2. 目录规范 | 符合 Agent Skill 标准目录结构（SKILL.md + skill.toml + scripts/） |
 | 3. 依赖声明 | SKILL.md 中列出所有前置 Skill，用户安装时可自动拉取 |
-| 4. 一键安装 | 用户通过 `openclaw skills install ci-selfheal` 即可安装 |
+| 4. 一键安装 | 用户通过 `agent skills install ci-selfheal` 即可安装 |
 | 5. 配置引导 | SKILL.md 提供所需环境变量的完整说明与新用户引导 |
-| 6. 版本发布 | 通过 Git Tag + GitHub Release 触发 OpenClaw Hub 索引更新 |
+| 6. 版本发布 | 通过 Git Tag + GitHub Release 触发 Agent Hub 索引更新 |
 
 **Skill 元信息清单**（发布时必须包含）：
 
@@ -1161,7 +1161,7 @@ orchestrator.py
 
 ```bash
 # 安装
-openclaw skills install ci-selfheal
+agent skills install ci-selfheal
 
 # 配置
 export JENKINS_URL="https://..."
@@ -1170,8 +1170,8 @@ export JENKINS_TOKEN="..."
 export JJB_CONFIG_PATH="./jjb-configs"
 
 # 使用
-openclaw ci-selfheal orchestrate --job example-pipeline --build 42
-openclaw ci-selfheal status --job example-pipeline
+agent ci-selfheal orchestrate --job example-pipeline --build 42
+agent ci-selfheal status --job example-pipeline
 ```
 
 ---
@@ -1208,12 +1208,12 @@ openclaw ci-selfheal status --job example-pipeline
 | 14 | `devops` | 全局：运维底座 | 一键部署、监控搭建、定时备份、故障诊断 |
 | 15 | `docker` | 基础设施 | 容器生命周期管理 |
 
-### B.4 OpenClaw 内置 API Tools
+### B.4 Agent 内置 API Tools
 
 | Tool | 用途 |
 |------|------|
-| `openclaw agent` | 调用 AI 模型进行诊断和修复生成 |
-| `openclaw skills install` | Skill 安装管理 |
+| `agent agent` | 调用 AI 模型进行诊断和修复生成 |
+| `agent skills install` | Skill 安装管理 |
 | 内置 Web 搜索 | AI 实时搜索未知错误解决方案 |
 
 ---

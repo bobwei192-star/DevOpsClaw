@@ -1,33 +1,33 @@
-# OpenClaw 容器中调试 Jenkins Skill 全过程
+# Agent 容器中调试 Jenkins Skill 全过程
 
 ## 环境信息
 
 | 组件 | 说明 |
 |------|------|
-| OpenClaw | 运行在 Docker 容器 `devopsclaw-openclaw` 中 |
+| Agent | 运行在 Docker 容器 `devopsagent-agent` 中 |
 | Jenkins | 运行在宿主机 WSL，端口 18440 |
 | 反向代理 | nginx，Jenkins 根路径为 `/jenkins` |
 | Skill 类型 | workspace skill（非 CLI 插件） |
 
-## 问题 1: `openclaw jenkins` 命令不存在
+## 问题 1: `agent jenkins` 命令不存在
 
 **错误:**
-Error: Unknown command: openclaw jenkins.
+Error: Unknown command: agent jenkins.
 No built-in command or plugin CLI metadata owns "jenkins".
 
 text
 
-**原因:** Jenkins 安装的是 **workspace skill**，不是 CLI 插件。Workspace skill 通过 `node` 直接执行脚本调用，不走 `openclaw jenkins` CLI 命令。
+**原因:** Jenkins 安装的是 **workspace skill**，不是 CLI 插件。Workspace skill 通过 `node` 直接执行脚本调用，不走 `agent jenkins` CLI 命令。
 
 **检查 skill 安装位置:**
 ```bash
-ls -la /home/node/.openclaw/workspace/skills/jenkins/
-cat /home/node/.openclaw/workspace/skills/jenkins/SKILL.md
+ls -la /home/node/.agent/workspace/skills/jenkins/
+cat /home/node/.agent/workspace/skills/jenkins/SKILL.md
 node@5da26b33f5b4:/app$ # 查看 jenkins skill 目录结构
-ls -la /home/node/.openclaw/workspace/skills/jenkins/
+ls -la /home/node/.agent/workspace/skills/jenkins/
 
 # 查看 skill 的元数据和说明
-cat /home/node/.openclaw/workspace/skills/jenkins/skill.md 2>/dev/null || cat /home/node/.openclaw/workspace/skills/jenkins/README.md 2>/dev/null || cat /home/node/.openclaw/workspace/skills/jenkins/SKILL.md 2>/dev/null
+cat /home/node/.agent/workspace/skills/jenkins/skill.md 2>/dev/null || cat /home/node/.agent/workspace/skills/jenkins/README.md 2>/dev/null || cat /home/node/.agent/workspace/skills/jenkins/SKILL.md 2>/dev/null
 total 4
 drwxrwxrwx 1 node node 4096 May 10 16:57 .
 drwxrwxrwx 1 node node 4096 May 10 16:57 ..

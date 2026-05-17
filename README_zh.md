@@ -1,8 +1,8 @@
-# DevOpsClaw
+# DevOpsAgent
 
 > **全球首创 pipecircle** - AI 驱动的 CI/CD 闭环修复系统
 > 
-> **新范式 CI/CD 系统**：高稳定高可用 Jenkins 引擎 + 新质生产力 OpenClaw AI 驱动
+> **新范式 CI/CD 系统**：高稳定高可用 Jenkins 引擎 + 新质生产力 Agent AI 驱动
 
 ---
 
@@ -11,7 +11,7 @@
 ### 一键部署
 
 ```bash
-cd DevOpsClaw
+cd DevOpsAgent
 cp .env.example .env
 chmod +x deploy_all.sh
 sudo ./deploy_all.sh
@@ -36,7 +36,7 @@ docker compose up -d
 |------|------|------|
 | Jenkins | 8081 | Web UI |
 | Jenkins Agent | 50000 | 主从通信 |
-| OpenClaw | 18789 | AI 平台 |
+| Agent | 18789 | AI 平台 |
 | GitLab HTTP | 8082 | Web UI |
 | GitLab SSH | 2222 | Git 操作 |
 
@@ -52,7 +52,7 @@ docker compose up -d
                           │
                           ▼ HTTP
 ┌───────────┐ ┌───────────┐ ┌───────────┐
-│  OpenClaw │ │  Jenkins  │ │  GitLab   │
+│  Agent │ │  Jenkins  │ │  GitLab   │
 │   (AI)    │ │   (CI)    │ │ (代码仓库) │
 └───────────┘ └───────────┘ └───────────┘
 ```
@@ -171,8 +171,8 @@ docker compose logs -f
 docker compose down
 
 # 密码获取
-docker exec devopsclaw-jenkins cat /var/jenkins_home/secrets/initialAdminPassword
-docker exec devopsclaw-gitlab cat /etc/gitlab/initial_root_password
+docker exec devopsagent-jenkins cat /var/jenkins_home/secrets/initialAdminPassword
+docker exec devopsagent-gitlab cat /etc/gitlab/initial_root_password
 
 # SSL 证书
 ./deploy_nginx/generate_certs.sh

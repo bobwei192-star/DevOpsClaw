@@ -5,7 +5,7 @@ pipeline {
         stage('检出代码') {
             steps {
                 git branch: 'main',
-                    url: 'http://oauth2:glpat-86x2pYV78K_2MMCZXc9RE286MQp1OjEH.01.0w1fpvejn@devopsclaw-gitlab:80/ci/gitlab_repo_example.git'
+                    url: 'http://oauth2:glpat-86x2pYV78K_2MMCZXc9RE286MQp1OjEH.01.0w1fpvejn@devopsagent-gitlab:80/ci/gitlab_repo_example.git'
             }
         }
 
@@ -40,7 +40,7 @@ pipeline {
                     repo: 'ci/gitlab_repo_example'
                 ]
                 httpRequest(
-                    url: 'http://devopsclaw-openclaw:8080/webhook/ci-failure',
+                    url: 'http://devopsagent-agent:8080/webhook/ci-failure',
                     httpMode: 'POST',
                     contentType: 'APPLICATION_JSON',
                     requestBody: groovy.json.JsonOutput.toJson(payload),

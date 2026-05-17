@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-OpenClaw device signature expired 一键诊断 + 修复脚本
+Agent device signature expired 一键诊断 + 修复脚本
 ======================================================
 问题根因:
-  - 客户端(浏览器)和网关(OpenClaw容器)之间的时间偏差超过2分钟时，
+  - 客户端(浏览器)和网关(Agent容器)之间的时间偏差超过2分钟时，
     浏览器生成的设备签名时间戳会被网关拒绝，返回 code=1008 "device signature expired"
   - 这在 Docker/WSL2 环境中非常常见，因为容器时钟可能与主机不同步
-  - 官方文档: https://github.com/openclaw/openclaw/issues/29298
+  - 官方文档: https://github.com/agent/agent/issues/29298
 
 修复策略:
   1. 同步容器时间（挂载 /etc/localtime，设置 TZ 环境变量）
-  2. 预写 openclaw.json（mode=local + auth.token + allowedOrigins + trustedProxies）
+  2. 预写 agent.json（mode=local + auth.token + allowedOrigins + trustedProxies）
   3. 配置 allowInsecureAuth=true 允许纯 token 认证（跳过设备签名验证）
   4. 启动容器后运行 onboard 初始化
   5. 清理浏览器 localStorage 缓存
@@ -29,12 +29,12 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
 
-CONTAINER_NAME = "devopsclaw-openclaw"
-VOLUME_NAME = "devopsclaw_openclaw-data"
-OPENCLAW_IMAGE = "ghcr.io/openclaw/openclaw:latest"
-OPENCLAW_PORT = "18789"
+CONTAINER_NAME = "devopsagent-agent"
+VOLUME_NAME = "devopsagent_agent-data"
+AGENT_IMAGE = "ghcr.io/agent/agent:latest"
+AGENT_PORT = "18789"
 NGINX_PORT = "18442"
-TOKEN_FILE = PROJECT_ROOT / ".openclaw_token"
+TOKEN_FILE = PROJECT_ROOT / ".agent_token"
 ENV_FILE = PROJECT_ROOT / ".env"
 MAX_RETRIES = 3
 
@@ -86,7 +86,7 @@ def generate_token():
     rc, stdout, stderr = run("date +%s%N | sha256sum | awk '{print $1}'")
     if rc == 0 and stdout:
         return stdout.strip()
-    return f"devopsclaw_{int(time.time())}_fallback"
+    return f"devopsagent_{int(time.time())}_fallback"
 
 
 def container_running():
@@ -100,7 +100,7 @@ def container_exists():
 
 
 def nginx_running():
-    rc, stdout, _ = run("docker ps -q --filter name=devopsclaw-nginx")
+    rc, stdout, _ = run("docker ps -q --filter name=devopsagent-nginx")
     return rc == 0 and bool(stdout)
 
 
@@ -142,8 +142,8 @@ def sync_container_time():
     return True
 
 
-def write_openclaw_json(token):
-    """预写 openclaw.json 到数据卷 - 包含 allowInsecureAuth 关键配置"""
+def write_agent_json(token):
+    """预写 agent.json 到数据卷 - 包含 allowInsecureAuth 关键配置"""
     config = {
         "gateway": {
             "mode": "local",
@@ -154,8 +154,8 @@ def write_openclaw_json(token):
             "controlUi": {
                 "enabled": True,
                 "allowedOrigins": [
-                    f"http://127.0.0.1:{OPENCLAW_PORT}",
-                    f"http://localhost:{OPENCLAW_PORT}",
+                    f"http://127.0.0.1:{AGENT_PORT}",
+                    f"http://localhost:{AGENT_PORT}",
                     f"https://127.0.0.1:{NGINX_PORT}",
                     f"https://localhost:{NGINX_PORT}",
                 ],
@@ -171,7 +171,7 @@ def write_openclaw_json(token):
         }
     }
     json_str = json.dumps(config, indent=2)
-    cmd = f"""docker run --rm -v {VOLUME_NAME}:/data alpine sh -c "cat > /data/openclaw.json << 'INNEREOF'
+    cmd = f"""docker run --rm -v {VOLUME_NAME}:/data alpine sh -c "cat > /data/agent.json << 'INNEREOF'
 {json_str}
 INNEREOF" """
     rc, _, _ = run(cmd)
@@ -179,7 +179,7 @@ INNEREOF" """
 
 
 def start_container(token):
-    """启动 OpenClaw 容器 - 关键修复: 挂载时间文件 + TZ 环境变量"""
+    """启动 Agent 容器 - 关键修复: 挂载时间文件 + TZ 环境变量"""
     # 先停止并删除旧容器
     if container_running():
         run(f"docker stop {CONTAINER_NAME}", timeout=10)
@@ -188,24 +188,24 @@ def start_container(token):
 
     cmd = f"""docker run -d \
         --name {CONTAINER_NAME} \
-        --network devopsclaw-network \
+        --network devopsagent-network \
         --restart unless-stopped \
         --user "1000:1000" \
         --cap-drop=ALL \
         --security-opt=no-new-privileges \
         --read-only \
         --tmpfs /tmp:rw,noexec,nosuid,size=64m \
-        -p 127.0.0.1:{OPENCLAW_PORT}:18789 \
-        -v {VOLUME_NAME}:/home/node/.openclaw \
+        -p 127.0.0.1:{AGENT_PORT}:18789 \
+        -v {VOLUME_NAME}:/home/node/.agent \
         -v /etc/localtime:/etc/localtime:ro \
         -v /usr/share/zoneinfo:/usr/share/zoneinfo:ro \
-        -e OPENCLAW_GATEWAY_TOKEN={token} \
+        -e AGENT_GATEWAY_TOKEN={token} \
         -e GATEWAY_TOKEN={token} \
         -e LOG_LEVEL=INFO \
         -e TZ=Asia/Shanghai \
-        -e OPENCLAW_TZ=Asia/Shanghai \
-        {OPENCLAW_IMAGE} \
-        node openclaw.mjs gateway"""
+        -e AGENT_TZ=Asia/Shanghai \
+        {AGENT_IMAGE} \
+        node agent.mjs gateway"""
 
     rc, stdout, stderr = run(cmd)
     if rc != 0:
@@ -243,7 +243,7 @@ def run_onboard():
     log_step("运行 onboard 初始化")
 
     # 先检查是否需要 onboard
-    rc, stdout, stderr = run(f"docker exec {CONTAINER_NAME} node openclaw.mjs onboard --mode local 2>&1", timeout=30)
+    rc, stdout, stderr = run(f"docker exec {CONTAINER_NAME} node agent.mjs onboard --mode local 2>&1", timeout=30)
     log_info(f"onboard stdout: {stdout}")
     if stderr:
         log_info(f"onboard stderr: {stderr}")
@@ -264,7 +264,7 @@ def restart_container():
 
 
 def check_gateway_status():
-    rc, stdout, _ = run(f"docker exec {CONTAINER_NAME} node openclaw.mjs gateway status 2>/dev/null")
+    rc, stdout, _ = run(f"docker exec {CONTAINER_NAME} node agent.mjs gateway status 2>/dev/null")
     print(f"\n{Colors.CYAN}--- Gateway Status ---{Colors.NC}")
     if stdout:
         for line in stdout.split("\n"):
@@ -274,7 +274,7 @@ def check_gateway_status():
 
 
 def check_devices():
-    rc, stdout, _ = run(f"docker exec {CONTAINER_NAME} node openclaw.mjs devices list 2>/dev/null")
+    rc, stdout, _ = run(f"docker exec {CONTAINER_NAME} node agent.mjs devices list 2>/dev/null")
     print(f"\n{Colors.CYAN}--- Devices ---{Colors.NC}")
     if stdout:
         print(stdout)
@@ -325,7 +325,7 @@ def test_http_health(token):
     """测试 HTTP health 端点"""
     log_step("测试 HTTP 连通性")
     # 直连
-    rc, stdout, _ = run(f"curl -sk http://127.0.0.1:{OPENCLAW_PORT}/health")
+    rc, stdout, _ = run(f"curl -sk http://127.0.0.1:{AGENT_PORT}/health")
     log_info(f"直连 health: {stdout}")
     # Nginx 代理
     if nginx_running():
@@ -367,8 +367,8 @@ def test_websocket(token):
 def reload_nginx():
     if not nginx_running():
         return
-    run("docker exec devopsclaw-nginx nginx -t 2>/dev/null")
-    run("docker exec devopsclaw-nginx nginx -s reload 2>/dev/null")
+    run("docker exec devopsagent-nginx nginx -t 2>/dev/null")
+    run("docker exec devopsagent-nginx nginx -s reload 2>/dev/null")
     log_info("Nginx 已重载")
 
 
@@ -386,16 +386,16 @@ def save_token(token):
 
     if ENV_FILE.exists():
         content = ENV_FILE.read_text()
-        if "OPENCLAW_GATEWAY_TOKEN=your_secure_gateway_token_here" in content:
+        if "AGENT_GATEWAY_TOKEN=your_secure_gateway_token_here" in content:
             content = content.replace(
-                "OPENCLAW_GATEWAY_TOKEN=your_secure_gateway_token_here",
-                f"OPENCLAW_GATEWAY_TOKEN={token}",
+                "AGENT_GATEWAY_TOKEN=your_secure_gateway_token_here",
+                f"AGENT_GATEWAY_TOKEN={token}",
             )
-        elif "OPENCLAW_GATEWAY_TOKEN=" in content:
+        elif "AGENT_GATEWAY_TOKEN=" in content:
             import re
-            content = re.sub(r"OPENCLAW_GATEWAY_TOKEN=.*", f"OPENCLAW_GATEWAY_TOKEN={token}", content)
+            content = re.sub(r"AGENT_GATEWAY_TOKEN=.*", f"AGENT_GATEWAY_TOKEN={token}", content)
         else:
-            content += f"\nOPENCLAW_GATEWAY_TOKEN={token}\n"
+            content += f"\nAGENT_GATEWAY_TOKEN={token}\n"
         ENV_FILE.write_text(content)
         log_info("Token 已更新到 .env")
 
@@ -403,21 +403,21 @@ def save_token(token):
 def print_summary(token):
     print()
     print(f"{Colors.GREEN}{'═' * 70}{Colors.NC}")
-    print(f"{Colors.GREEN}{Colors.BOLD}  OpenClaw 诊断/修复完成{Colors.NC}")
+    print(f"{Colors.GREEN}{Colors.BOLD}  Agent 诊断/修复完成{Colors.NC}")
     print(f"{Colors.GREEN}{'═' * 70}{Colors.NC}")
     print()
     print(f"  Token 文件: {TOKEN_FILE}")
     print(f"  Env 文件:   {ENV_FILE}")
     print()
     print(f"  {Colors.BOLD}访问地址（Chrome 无痕窗口打开）:{Colors.NC}")
-    print(f"  {Colors.CYAN}http://127.0.0.1:{OPENCLAW_PORT}/#token={token}{Colors.NC}")
+    print(f"  {Colors.CYAN}http://127.0.0.1:{AGENT_PORT}/#token={token}{Colors.NC}")
     print(f"  {Colors.CYAN}https://127.0.0.1:{NGINX_PORT}/#token={token}{Colors.NC}")
     print()
 
 
 def main():
     print()
-    print(f"{Colors.GREEN}{Colors.BOLD}  OpenClaw Device Signature Expired 诊断修复脚本{Colors.NC}")
+    print(f"{Colors.GREEN}{Colors.BOLD}  Agent Device Signature Expired 诊断修复脚本{Colors.NC}")
     print(f"{Colors.YELLOW}  核心修复: 时间同步 + allowInsecureAuth=true{Colors.NC}")
     print()
 
@@ -441,18 +441,18 @@ def main():
     clear_volume()
     log_info("✓ 旧环境已清理")
 
-    # ========== Phase 4: 预写 openclaw.json ==========
-    log_step("Phase 4: 预写 openclaw.json（含 allowInsecureAuth）")
-    if write_openclaw_json(token):
-        log_info("✓ openclaw.json 已写入数据卷")
+    # ========== Phase 4: 预写 agent.json ==========
+    log_step("Phase 4: 预写 agent.json（含 allowInsecureAuth）")
+    if write_agent_json(token):
+        log_info("✓ agent.json 已写入数据卷")
     else:
-        log_error("openclaw.json 写入失败")
+        log_error("agent.json 写入失败")
         return 1
 
     # ========== Phase 5: 启动容器 ==========
-    log_step("Phase 5: 启动 OpenClaw 容器（带时间同步挂载）")
+    log_step("Phase 5: 启动 Agent 容器（带时间同步挂载）")
     if not start_container(token):
-        log_error("容器启动失败，查看日志: docker logs devopsclaw-openclaw")
+        log_error("容器启动失败，查看日志: docker logs devopsagent-agent")
         return 1
 
     if not wait_healthy():
@@ -501,7 +501,7 @@ def main():
     print(f"  3. 如果还是报 device signature expired:")
     print(f"     a) 检查时间: docker exec {CONTAINER_NAME} date")
     print(f"     b) 清理浏览器缓存: F12 -> Application -> Clear site data")
-    print(f"     c) 手动批准设备: docker exec {CONTAINER_NAME} node openclaw.mjs devices approve <UUID>")
+    print(f"     c) 手动批准设备: docker exec {CONTAINER_NAME} node agent.mjs devices approve <UUID>")
     print()
 
     return 0

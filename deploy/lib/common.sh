@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# DevOpsClaw 通用库文件
+# DevOpsAgent 通用库文件
 # =============================================================================
 # 包含：颜色定义、日志函数、通用工具函数
 # 使用方法：source lib/common.sh
@@ -176,10 +176,10 @@ pull_image_with_fallback() {
     local -a source_names=()
     
     case "$service" in
-        openclaw)
+        agent)
             sources=(
-                "ghcr.io/openclaw/openclaw:latest"
-                "docker.io/openclaw/openclaw:latest"
+                "ghcr.io/agent/agent:latest"
+                "docker.io/agent/agent:latest"
             )
             source_names=(
                 "github-ghcr"
@@ -188,9 +188,9 @@ pull_image_with_fallback() {
             ;;
         jenkins)
             sources=(
-                "docker.io/jenkins/jenkins:lts-jdk17"
-                "registry.cn-hangzhou.aliyuncs.com/library/jenkins:lts-jdk17"
-                "docker.mirrors.sjtug.sjtu.edu.cn/library/jenkins:lts-jdk17"
+                "docker.io/jenkins/jenkins:lts-jdk21"
+                "registry.cn-hangzhou.aliyuncs.com/library/jenkins:lts-jdk21"
+                "docker.mirrors.sjtug.sjtu.edu.cn/library/jenkins:lts-jdk21"
             )
             source_names=(
                 "dockerhub"
@@ -313,7 +313,7 @@ pull_image_with_fallback() {
         echo -e "${CYAN}【方案 2】配置代理访问 GHCR${NC}"
         echo "  export HTTP_PROXY=http://127.0.0.1:7890"
         echo "  export HTTPS_PROXY=http://127.0.0.1:7890"
-        echo "  sudo -E docker pull ghcr.io/openclaw/openclaw:latest"
+        echo "  sudo -E docker pull ghcr.io/agent/agent:latest"
         echo
         
         return 1
@@ -336,7 +336,7 @@ pull_image_with_fallback() {
 # =============================================================================
 
 get_jenkins_password() {
-    local container_name="${1:-devopsclaw-jenkins}"
+    local container_name="${1:-devopsagent-jenkins}"
     local password_file="/var/jenkins_home/secrets/initialAdminPassword"
     
     log_step "获取 Jenkins 初始密码"
@@ -377,7 +377,7 @@ get_jenkins_password() {
 }
 
 get_gitlab_password() {
-    local container_name="${1:-devopsclaw-gitlab}"
+    local container_name="${1:-devopsagent-gitlab}"
     local password_file="/etc/gitlab/initial_root_password"
     
     log_step "获取 GitLab 初始密码"
@@ -420,70 +420,70 @@ get_gitlab_password() {
 }
 
 # =============================================================================
-# OpenClaw 设备管理函数
+# Agent 设备管理函数
 # =============================================================================
 
-reset_openclaw_device() {
-    local container_name="${1:-devopsclaw-openclaw}"
-    local openclaw_dir="${2:-/home/openclaw}"
+reset_agent_device() {
+    local container_name="${1:-devopsagent-agent}"
+    local agent_dir="${2:-/home/agent}"
     
-    log_step "重置 OpenClaw 设备（解决 device signature expired 问题）"
+    log_step "重置 Agent 设备（解决 device signature expired 问题）"
     
     if ! docker ps -q --filter "name=$container_name" 2>/dev/null | grep -q .; then
         if ! docker ps -aq --filter "name=$container_name" 2>/dev/null | grep -q .; then
-            log_error "OpenClaw 容器不存在: $container_name"
+            log_error "Agent 容器不存在: $container_name"
             return 1
         else
-            log_warn "OpenClaw 容器未运行"
+            log_warn "Agent 容器未运行"
         fi
     fi
     
-    log_info "正在停止 OpenClaw 容器..."
+    log_info "正在停止 Agent 容器..."
     docker stop "$container_name" 2>/dev/null || true
     
     log_info "正在清除设备签名和配对数据..."
     
-    if [[ -d "$openclaw_dir" ]]; then
-        log_info "清除 OpenClaw 数据目录: $openclaw_dir"
+    if [[ -d "$agent_dir" ]]; then
+        log_info "清除 Agent 数据目录: $agent_dir"
         
-        rm -f "$openclaw_dir/.gateway_token" 2>/dev/null || true
-        rm -f "$openclaw_dir/openclaw.json" 2>/dev/null || true
-        rm -f "$openclaw_dir/devices.json" 2>/dev/null || true
-        rm -f "$openclaw_dir/sessions.json" 2>/dev/null || true
+        rm -f "$agent_dir/.gateway_token" 2>/dev/null || true
+        rm -f "$agent_dir/agent.json" 2>/dev/null || true
+        rm -f "$agent_dir/devices.json" 2>/dev/null || true
+        rm -f "$agent_dir/sessions.json" 2>/dev/null || true
         
-        if [[ -d "$openclaw_dir/.cache" ]]; then
-            rm -rf "$openclaw_dir/.cache" 2>/dev/null || true
+        if [[ -d "$agent_dir/.cache" ]]; then
+            rm -rf "$agent_dir/.cache" 2>/dev/null || true
         fi
         
-        if [[ -d "$openclaw_dir/.data" ]]; then
-            rm -rf "$openclaw_dir/.data" 2>/dev/null || true
+        if [[ -d "$agent_dir/.data" ]]; then
+            rm -rf "$agent_dir/.data" 2>/dev/null || true
         fi
         
         log_info "数据目录已清理"
     else
-        log_warn "未找到 OpenClaw 数据目录: $openclaw_dir"
+        log_warn "未找到 Agent 数据目录: $agent_dir"
         log_info "尝试通过 Docker 清理容器内部数据..."
         docker rm -f "$container_name" 2>/dev/null || true
     fi
     
     echo
-    echo -e "${GREEN}OpenClaw 设备已重置${NC}"
+    echo -e "${GREEN}Agent 设备已重置${NC}"
     echo
-    log_info "请重新部署 OpenClaw 或手动执行以下步骤:"
+    log_info "请重新部署 Agent 或手动执行以下步骤:"
     echo
     echo "  1. 重新生成 Gateway Token 并启动容器"
     echo "  2. 访问 http://127.0.0.1:18789/overview 进行重新配对"
     echo
 }
 
-list_openclaw_devices() {
-    local container_name="${1:-devopsclaw-openclaw}"
+list_agent_devices() {
+    local container_name="${1:-devopsagent-agent}"
     
-    log_step "列出 OpenClaw 待配对设备"
+    log_step "列出 Agent 待配对设备"
     
     if ! docker ps -q --filter "name=$container_name" 2>/dev/null | grep -q .; then
-        log_error "OpenClaw 容器未运行: $container_name"
-        log_info "请先启动 OpenClaw 容器"
+        log_error "Agent 容器未运行: $container_name"
+        log_info "请先启动 Agent 容器"
         return 1
     fi
     
@@ -491,28 +491,28 @@ list_openclaw_devices() {
     echo -e "${CYAN}待配对设备列表:${NC}"
     echo
     
-    docker exec "$container_name" node openclaw.mjs devices list 2>/dev/null || {
+    docker exec "$container_name" node agent.mjs devices list 2>/dev/null || {
         log_warn "命令执行失败，尝试查看设备配置文件..."
-        docker exec "$container_name" cat /home/node/.openclaw/devices.json 2>/dev/null || echo "  未找到设备"
+        docker exec "$container_name" cat /home/node/.agent/devices.json 2>/dev/null || echo "  未找到设备"
     }
     echo
 }
 
-approve_openclaw_device() {
+approve_agent_device() {
     local device_uuid="$1"
-    local container_name="${2:-devopsclaw-openclaw}"
+    local container_name="${2:-devopsagent-agent}"
     
-    log_step "批准 OpenClaw 设备配对"
+    log_step "批准 Agent 设备配对"
     
     if [[ -z "$device_uuid" ]]; then
         log_error "请提供设备 UUID"
-        log_info "用法: approve_openclaw_device <UUID>"
+        log_info "用法: approve_agent_device <UUID>"
         return 1
     fi
     
     if ! docker ps -q --filter "name=$container_name" 2>/dev/null | grep -q .; then
-        log_error "OpenClaw 容器未运行: $container_name"
-        log_info "请先启动 OpenClaw 容器"
+        log_error "Agent 容器未运行: $container_name"
+        log_info "请先启动 Agent 容器"
         return 1
     fi
     
@@ -520,7 +520,7 @@ approve_openclaw_device() {
     log_info "正在批准设备: $device_uuid"
     echo
     
-    if docker exec "$container_name" node openclaw.mjs devices approve "$device_uuid"; then
+    if docker exec "$container_name" node agent.mjs devices approve "$device_uuid"; then
         echo
         log_info "设备配对成功!"
         echo
@@ -534,11 +534,29 @@ approve_openclaw_device() {
 }
 
 # =============================================================================
+# 本机 IP 检测
+# =============================================================================
+
+detect_local_ip() {
+    local detected=""
+    if command -v ip &>/dev/null; then
+        detected=$(ip -4 addr show 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v 127.0.0.1 | head -1)
+    fi
+    if [[ -z "$detected" ]] && command -v hostname &>/dev/null; then
+        detected=$(hostname -I 2>/dev/null | awk '{print $1}' | grep -v 127.0.0.1)
+    fi
+    if [[ -z "$detected" ]]; then
+        detected="127.0.0.1"
+    fi
+    echo "$detected"
+}
+
+# =============================================================================
 # 导出函数
 # =============================================================================
 export RED GREEN YELLOW BLUE PURPLE CYAN BOLD NC
 export -f log_info log_warn log_error log_step log_banner
 export -f check_root check_docker load_env check_port
-export -f pull_image_with_fallback
+export -f pull_image_with_fallback detect_local_ip
 export -f get_jenkins_password get_gitlab_password
-export -f reset_openclaw_device list_openclaw_devices approve_openclaw_device
+export -f reset_agent_device list_agent_devices approve_agent_device

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-DevOpsClaw Docker 镜像速度测试脚本
+DevOpsAgent Docker 镜像速度测试脚本
 功能：
   - 测试不同 Docker 镜像源的连接速度
   - 测试 Docker Hub 代理的拉取速度
@@ -366,7 +366,7 @@ class DockerSpeedTest:
         """生成测试报告"""
         report_lines = []
         report_lines.append("=" * 80)
-        report_lines.append("DevOpsClaw Docker 镜像测试报告")
+        report_lines.append("DevOpsAgent Docker 镜像测试报告")
         report_lines.append("=" * 80)
         report_lines.append(f"测试时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
         
@@ -545,7 +545,7 @@ def main():
     """命令行入口"""
     import argparse
     
-    parser = argparse.ArgumentParser(description="DevOpsClaw Docker 镜像速度测试")
+    parser = argparse.ArgumentParser(description="DevOpsAgent Docker 镜像速度测试")
     parser.add_argument("--connectivity-only", action="store_true", help="只测试连通性")
     parser.add_argument("--pull-small", action="store_true", help="测试拉取小型镜像")
     parser.add_argument("--pull-medium", action="store_true", help="测试拉取中型镜像")
@@ -557,7 +557,7 @@ def main():
     tester = DockerSpeedTest()
     
     print("\n" + "=" * 80)
-    print("DevOpsClaw Docker 镜像速度测试")
+    print("DevOpsAgent Docker 镜像速度测试")
     print("=" * 80)
     
     tester.test_current_docker_config()

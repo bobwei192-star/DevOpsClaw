@@ -1,15 +1,15 @@
-/home/zx/CICD/DevOpsClaw/doc/11OpenClaw CI 自愈闭环流水线—核心设计方案_极简.md最优融合方案（推荐）
+/home/zx/CICD/DevOpsAgent/doc/11Agent CI 自愈闭环流水线—核心设计方案_极简.md最优融合方案（推荐）
 text
 Jenkins Job 构建失败
       │
       ▼
 ┌──────────────────────────────────┐
-│ 1. Jenkins Webhook 通知 OpenClaw │  ← 唯一入口，仅失败时触发
+│ 1. Jenkins Webhook 通知 Agent │  ← 唯一入口，仅失败时触发
 └────────────────┬─────────────────┘
                  │
                  ▼
 ┌──────────────────────────────────┐
-│ 2. OpenClaw 自愈执行：            │
+│ 2. Agent 自愈执行：            │
 │   · 拉取 Jenkins 日志（脱敏）      │
 │   · 拉取 GitLab 代码（只读）       │
 │   · AI 诊断 + 生成修复代码        │
@@ -18,7 +18,7 @@ Jenkins Job 构建失败
                  │
                  ▼
 ┌──────────────────────────────────┐
-│ 3. OpenClaw 触发 Jenkins 重建     │  ← OpenClaw 主动调用 API
+│ 3. Agent 触发 Jenkins 重建     │  ← Agent 主动调用 API
 │    （在 fix 分支上构建）           │
 │    最多重试 5 轮                  │
 │    · 每轮失败 → 拿新日志再诊断     │
@@ -30,7 +30,7 @@ Jenkins Job 构建失败
         ▼                 ▼
 ┌─────────────┐   ┌─────────────────┐
 │ 构建 SUCCESS │   │  5 轮全部失败     │
-│ · OpenClaw   │   │  · 熔断，停止自愈  │
+│ · Agent   │   │  · 熔断，停止自愈  │
 │   主动轮询   │   │  · 生成诊断报告    │
 │   直到成功   │   │  · 通知人工介入    │
 └──────┬──────┘   └─────────────────┘
@@ -46,16 +46,16 @@ Jenkins Job 构建失败
 关键机制说明
 Jenkins 只通知一次：仅在初始构建失败时发送 Webhook。
 
-修复后的成功，由 OpenClaw 自己发现：通过 Jenkins REST API 定期轮询修复构建（例如每 5 秒查一次），一旦状态变为 SUCCESS，立即创建 MR，不需要 Jenkins 二次通知。
+修复后的成功，由 Agent 自己发现：通过 Jenkins REST API 定期轮询修复构建（例如每 5 秒查一次），一旦状态变为 SUCCESS，立即创建 MR，不需要 Jenkins 二次通知。
 
 这样可以避免：
 
 Jenkins 成功通知被误判为新失败；
 
-复杂的回调逻辑，所有状态管理集中在 OpenClaw 一端。
+复杂的回调逻辑，所有状态管理集中在 Agent 一端。
 
 一句话总结
-Jenkins 失败 → OpenClaw 接管 → 自修后自己触发构建 → 自己轮询结果 → 成功立即提 MR。Jenkins 全程只当工具，不参与决策。
+Jenkins 失败 → Agent 接管 → 自修后自己触发构建 → 自己轮询结果 → 成功立即提 MR。Jenkins 全程只当工具，不参与决策。
 
 ---
 
@@ -63,7 +63,7 @@ Jenkins 失败 → OpenClaw 接管 → 自修后自己触发构建 → 自己轮
 
 ### 问题
 
-OpenClaw 触发验证构建后，若验证构建也失败，Jenkins `post { failure }` 会二次发送 webhook，导致同一 Job 上出现两个并行的修复进程：
+Agent 触发验证构建后，若验证构建也失败，Jenkins `post { failure }` 会二次发送 webhook，导致同一 Job 上出现两个并行的修复进程：
 
 ```
 Build #34 失败 → Webhook → 修复进程-A 启动 → 触发 Build #35 → 轮询 #35
@@ -91,7 +91,7 @@ pipeline {
                     // 只有初始构建失败才发 Webhook
                     sh "curl -X POST .../webhook/ci-failure ..."
                 }
-                // BUILD_TYPE=selfheal 时 Jenkins 沉默，OpenClaw 自己轮询
+                // BUILD_TYPE=selfheal 时 Jenkins 沉默，Agent 自己轮询
             }
         }
     }

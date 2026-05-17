@@ -46,19 +46,19 @@ export JENKINS_URL="https://172.19.0.1:18440/jenkins"
 export JENKINS_USER="zx"
 export JENKINS_API_TOKEN="11e9fec..."   # 注意: 是 API_TOKEN，不是 TOKEN
 export NODE_TLS_REJECT_UNAUTHORIZED=0    # 跳过自签名证书验证
-问题 5: openclaw config set 验证失败
+问题 5: agent config set 验证失败
 错误:
 
 text
 Config validation failed: skills: Unrecognized key: "jenkins"
-原因: Workspace skill 的配置不走 openclaw config set，而是通过环境变量直接传递给脚本。
+原因: Workspace skill 的配置不走 agent config set，而是通过环境变量直接传递给脚本。
 
 正确方式: 直接在 shell 中 export 环境变量。
 
 最终可用命令
 bash
 # 在容器内执行
-baseDir="/home/node/.openclaw/workspace/skills/jenkins"
+baseDir="/home/node/.agent/workspace/skills/jenkins"
 export JENKINS_URL="https://172.19.0.1:18440/jenkins"
 export JENKINS_USER="zx"
 export JENKINS_API_TOKEN="11e9fec..."
@@ -79,17 +79,17 @@ text
 
 ---
 
-### 文档 2: `openclaw-jenkins-skill-reference.md`
+### 文档 2: `agent-jenkins-skill-reference.md`
 
 ```markdown
-# OpenClaw Jenkins Skill 快速参考
+# Agent Jenkins Skill 快速参考
 
 ## 前置条件
 
 在容器内执行任何命令前，先设置环境变量：
 
 ```bash
-baseDir="/home/node/.openclaw/workspace/skills/jenkins"
+baseDir="/home/node/.agent/workspace/skills/jenkins"
 export JENKINS_URL="https://172.19.0.1:18440/jenkins"
 export JENKINS_USER="zx"
 export JENKINS_API_TOKEN="11e9fec..."
@@ -119,20 +119,20 @@ NODE_TLS_REJECT_UNAUTHORIZED	跳过 SSL 证书验证（自签名证书必需）	
 容器访问宿主机（推荐）	https://172.19.0.1:18440/jenkins
 宿主机本地	https://127.0.0.1:18440/jenkins
 Docker Desktop	https://host.docker.internal:18440/jenkins
-在 OpenClaw Agent 中使用
+在 Agent Agent 中使用
 通过 Agent 对话自动调用 skill:
 
 bash
-openclaw agent --message "列出 Jenkins 上的所有 jobs"
-openclaw agent --message "触发 example_fauliure_job 的构建"
-openclaw agent --message "查看 example_fauliure_job 最后一次构建的日志"
+agent agent --message "列出 Jenkins 上的所有 jobs"
+agent agent --message "触发 example_fauliure_job 的构建"
+agent agent --message "查看 example_fauliure_job 最后一次构建的日志"
 或交互式聊天:
 
 bash
-openclaw chat
+agent chat
 Skill 文件位置
 text
-/home/node/.openclaw/workspace/skills/jenkins/
+/home/node/.agent/workspace/skills/jenkins/
 ├── SKILL.md          # 使用说明
 ├── _meta.json        # 元数据
 ├── .clawhub/         # 安装来源信息
@@ -140,7 +140,7 @@ text
     └── jenkins.mjs   # 主脚本
 text
 继续啊
-好的，我看到你成功运行了 openclaw agent，现在继续。
+好的，我看到你成功运行了 agent agent，现在继续。
 
 你现在应该已经进入了 agent 对话模式，可以直接输入自然语言让 Agent 调用 Jenkins skill。比如：
 
@@ -155,7 +155,7 @@ text
 如果你想继续用命令行直接调脚本，现在是新的 shell，需要重新设置环境变量：
 
 bash
-baseDir="/home/node/.openclaw/workspace/skills/jenkins"
+baseDir="/home/node/.agent/workspace/skills/jenkins"
 export JENKINS_URL="https://172.19.0.1:18440/jenkins"
 export JENKINS_USER="zx"
 export JENKINS_API_TOKEN="11e9fec81c11241d5a3897ab45608c6851"

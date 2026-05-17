@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-DevOpsClaw 部署后测试脚本
+DevOpsAgent 部署后测试脚本
 功能：
   - 测试 Docker 环境
   - 测试 Docker 网络
@@ -78,7 +78,7 @@ class DeploymentTester:
             "success": False,
             "version": None,
             "network_exists": False,
-            "network_name": "devopsclaw-network"
+            "network_name": "devopsagent-network"
         }
 
         if not self.docker_available:
@@ -128,10 +128,10 @@ class DeploymentTester:
             "success": False,
             "running_containers": [],
             "expected_containers": [
-                "devopsclaw-jenkins",
-                "devopsclaw-gitlab",
-                "devopsclaw-openclaw",
-                "devopsclaw-nginx"
+                "devopsagent-jenkins",
+                "devopsagent-gitlab",
+                "devopsagent-agent",
+                "devopsagent-nginx"
             ],
             "container_status": {}
         }
@@ -211,7 +211,7 @@ class DeploymentTester:
         ports = {
             "jenkins": 18440,
             "gitlab": 18441,
-            "openclaw": 18442,
+            "agent": 18442,
             "registry": 18444,
             "harbor": 18445,
             "sonarqube": 18446
@@ -234,7 +234,7 @@ class DeploymentTester:
         test_endpoints = [
             ("jenkins", f"https://127.0.0.1:{ports['jenkins']}/jenkins/", "核心服务"),
             ("gitlab", f"https://127.0.0.1:{ports['gitlab']}/", "核心服务"),
-            ("openclaw", f"https://127.0.0.1:{ports['openclaw']}/", "核心服务"),
+            ("agent", f"https://127.0.0.1:{ports['agent']}/", "核心服务"),
             ("registry", f"https://127.0.0.1:{ports['registry']}/v2/", "可选服务"),
             ("harbor", f"https://127.0.0.1:{ports['harbor']}/", "可选服务"),
             ("sonarqube", f"https://127.0.0.1:{ports['sonarqube']}/", "可选服务"),
@@ -248,7 +248,7 @@ class DeploymentTester:
             print(f"\n    测试 {service} ({service_type}): {url}")
             
             # 检查容器是否运行
-            container_name = f"devopsclaw-{service}"
+            container_name = f"devopsagent-{service}"
             container_running = container_name in running_containers
             
             # 执行 curl 测试
@@ -274,7 +274,7 @@ class DeploymentTester:
                     print(f"      [INFO] {message} (可选服务，容器未运行)")
 
         # 统计结果
-        core_services = ["jenkins", "gitlab", "openclaw"]
+        core_services = ["jenkins", "gitlab", "agent"]
         core_success = all(
             result["endpoints"][s]["success"] or 
             not result["endpoints"][s]["container_running"]
@@ -301,7 +301,7 @@ class DeploymentTester:
         direct_ports = {
             "jenkins": 8081,
             "gitlab": 8082,
-            "openclaw": 18789
+            "agent": 18789
         }
 
         # 尝试从 .env 读取端口
@@ -322,17 +322,17 @@ class DeploymentTester:
                             direct_ports["gitlab"] = int(value.strip())
                         except ValueError:
                             pass
-                    elif "OPENCLAW_PORT" in line and "=" in line:
+                    elif "AGENT_PORT" in line and "=" in line:
                         _, value = line.split("=", 1)
                         try:
-                            direct_ports["openclaw"] = int(value.strip())
+                            direct_ports["agent"] = int(value.strip())
                         except ValueError:
                             pass
 
         test_endpoints = [
             ("jenkins", f"http://127.0.0.1:{direct_ports['jenkins']}/jenkins/"),
             ("gitlab", f"http://127.0.0.1:{direct_ports['gitlab']}/"),
-            ("openclaw", f"http://127.0.0.1:{direct_ports['openclaw']}/"),
+            ("agent", f"http://127.0.0.1:{direct_ports['agent']}/"),
         ]
 
         print(f"\n  测试直接访问端点:")
@@ -342,7 +342,7 @@ class DeploymentTester:
         for service, url in test_endpoints:
             print(f"\n    测试 {service}: {url}")
             
-            container_name = f"devopsclaw-{service}"
+            container_name = f"devopsagent-{service}"
             container_running = container_name in running_containers
             
             success, message, http_code = self._curl_test(url, timeout=10, verify_ssl=True)
@@ -371,7 +371,7 @@ class DeploymentTester:
         """生成测试报告"""
         report_lines = []
         report_lines.append("=" * 80)
-        report_lines.append("DevOpsClaw 部署测试报告")
+        report_lines.append("DevOpsAgent 部署测试报告")
         report_lines.append("=" * 80)
         report_lines.append(f"测试时间: {time.strftime('%Y-%m-%d %H:%M:%S')}")
 
@@ -481,12 +481,12 @@ class TestDeployment:
         
         # 检查 Nginx 容器是否运行
         running = self.tester.get_running_containers()
-        nginx_running = "devopsclaw-nginx" in running
+        nginx_running = "devopsagent-nginx" in running
         
         if nginx_running:
             print("\n  注意: Nginx 容器正在运行")
             print("  如果端点测试失败，可能是因为:")
-            print("  1. 后端服务（Jenkins/GitLab/OpenClaw）未运行")
+            print("  1. 后端服务（Jenkins/GitLab/Agent）未运行")
             print("  2. 服务正在启动中（GitLab 可能需要 2-5 分钟）")
             print("  3. 自签名证书导致的问题（测试已使用 -k 选项忽略）")
 
@@ -521,7 +521,7 @@ def main():
     """命令行入口"""
     import argparse
 
-    parser = argparse.ArgumentParser(description="DevOpsClaw 部署测试")
+    parser = argparse.ArgumentParser(description="DevOpsAgent 部署测试")
     parser.add_argument("--quick", action="store_true", help="快速测试（只测试 Docker 环境）")
     parser.add_argument("--full", action="store_true", help="完整测试（所有测试）")
 
@@ -530,7 +530,7 @@ def main():
     tester = DeploymentTester()
 
     print("\n" + "=" * 80)
-    print("DevOpsClaw 部署测试")
+    print("DevOpsAgent 部署测试")
     print("=" * 80)
 
     # 基础测试

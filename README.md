@@ -1,8 +1,8 @@
-# DevOpsClaw
+# DevOpsAgent
 
 > **World's First pipecircle** - AI-powered CI/CD Self-Healing Pipeline
 > 
-> **Next-Generation CI/CD System**: Built on Highly Stable Jenkins + AI-Powered OpenClaw with New Quality Productive Forces
+> **Next-Generation CI/CD System**: Built on Highly Stable Jenkins + AI-Powered Agent with New Quality Productive Forces
 
 ---
 
@@ -11,7 +11,7 @@
 ### One-Click Deployment
 
 ```bash
-cd DevOpsClaw
+cd DevOpsAgent
 cp .env.example .env
 chmod +x deploy_all.sh
 sudo ./deploy_all.sh
@@ -36,7 +36,7 @@ docker compose up -d
 |---------|------|-------------|
 | Jenkins | 8081 | Web UI |
 | Jenkins Agent | 50000 | Master-Slave Communication |
-| OpenClaw | 18789 | AI Platform |
+| Agent | 18789 | AI Platform |
 | GitLab HTTP | 8082 | Web UI |
 | GitLab SSH | 2222 | Git Operations |
 
@@ -53,7 +53,7 @@ docker compose up -d
                           │
                           ▼ HTTP
 ┌───────────┐ ┌───────────┐ ┌───────────┐
-│  OpenClaw │ │  Jenkins  │ │  GitLab   │
+│  Agent │ │  Jenkins  │ │  GitLab   │
 │   (AI)    │ │   (CI)    │ │  (Repo)   │
 └───────────┘ └───────────┘ └───────────┘
 ```
@@ -174,8 +174,8 @@ docker compose logs -f
 docker compose down
 
 # Get Passwords
-docker exec devopsclaw-jenkins cat /var/jenkins_home/secrets/initialAdminPassword
-docker exec devopsclaw-gitlab cat /etc/gitlab/initial_root_password
+docker exec devopsagent-jenkins cat /var/jenkins_home/secrets/initialAdminPassword
+docker exec devopsagent-gitlab cat /etc/gitlab/initial_root_password
 
 # SSL Certificates
 ./deploy_nginx/generate_certs.sh

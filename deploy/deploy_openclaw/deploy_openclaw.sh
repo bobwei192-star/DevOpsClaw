@@ -261,16 +261,18 @@ print_openclaw_summary() {
     fi
 
     if [[ "$nginx_running" == "true" ]]; then
+        local bind_display="${NGINX_BIND:-$(detect_local_ip)}"
+        local nginx_port="${NGINX_PORT_OPENCLAW:-18442}"
         echo
         echo -e "${BOLD}OpenClaw 访问地址:${NC}"
-        echo -e "  - Nginx HTTPS (推荐): ${CYAN}https://127.0.0.1:18442${NC}"
-        echo -e "  - Nginx HTTP: ${CYAN}http://127.0.0.1:18442${NC}"
-        echo -e "  - 直连: http://127.0.0.1:$OPENCLAW_PORT_WEB"
+        echo -e "  - Nginx HTTPS (推荐): ${CYAN}https://${bind_display}:${nginx_port}${NC}"
+        echo -e "  - 直连: http://${bind_display}:$OPENCLAW_PORT_WEB"
         echo -e "  - Agent 端口: $OPENCLAW_PORT_AGENT"
     else
+        local bind_display="${OPENCLAW_BIND:-$(detect_local_ip)}"
         echo
         echo -e "${BOLD}OpenClaw 访问地址:${NC}"
-        echo -e "  - 本地访问: ${CYAN}http://127.0.0.1:$OPENCLAW_PORT_WEB${NC}"
+        echo -e "  - 本地访问: ${CYAN}http://${bind_display}:$OPENCLAW_PORT_WEB${NC}"
         echo -e "  - 网络访问: ${YELLOW}http://<主机IP>:$OPENCLAW_PORT_WEB${NC}"
         echo -e "  - Agent 端口: $OPENCLAW_PORT_AGENT"
         echo
@@ -508,12 +510,14 @@ INNEREOF" 2>/dev/null && log_info "✓ openclaw.json 已写入数据卷（含 to
 
     echo
     echo -e "${GREEN}╔══════════════════════════════════════════════════════════════╗${NC}"
+    local bind_display="${NGINX_BIND:-$(detect_local_ip)}"
+    local nginx_port="${NGINX_PORT_OPENCLAW:-18442}"
     echo -e "${GREEN}║              OpenClaw 部署完成                                ║${NC}"
     echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo
     echo -e "${BOLD}访问地址:${NC}"
-    echo -e "  直连 (token):      ${CYAN}http://127.0.0.1:18789/#token=${token}${NC}"
-    echo -e "  Nginx (token):     ${CYAN}https://127.0.0.1:18442/#token=${token}${NC}"
+    echo -e "  直连 (token):      ${CYAN}http://${bind_display}:18789/#token=${token}${NC}"
+    echo -e "  Nginx (token):     ${CYAN}https://${bind_display}:${nginx_port}/#token=${token}${NC}"
     echo
     echo -e "${BOLD}Gateway Token:${NC}"
     echo -e "  ${YELLOW}$token${NC}"

@@ -7,7 +7,7 @@
 
 ## 一、故障现象
 
-在 OpenClaw 容器内执行 Jenkins Skill 时报错：
+在 Agent 容器内执行 Jenkins Skill 时报错：
 
 ```
 Error: connect ECONNREFUSED 172.19.0.1:18440
@@ -28,7 +28,7 @@ Error: connect ECONNREFUSED 172.19.0.1:18440
 │  WSL 宿主机                                                               │
 │                                                                           │
 │  ┌─────────────────────────────────────────────────────────────────────┐ │
-│  │  Docker Network: devopsclaw-network (bridge, 172.19.0.0/16)         │ │
+│  │  Docker Network: devopsagent-network (bridge, 172.19.0.0/16)         │ │
 │  │                                                                       │ │
 │  │  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐  │ │
 │  │  │   nginx          │  │   Jenkins        │  │   GitLab          │  │ │
@@ -36,12 +36,12 @@ Error: connect ECONNREFUSED 172.19.0.1:18440
 │  │  │                  │  │                  │  │                  │  │ │
 │  │  │ :8440→jenkins    │  │ :8080/jenkins    │  │ :80 (HTTP)       │  │ │
 │  │  │ :8441→gitlab     │  │                  │  │                  │  │ │
-│  │  │ :8442→openclaw   │  │                  │  │                  │  │ │
+│  │  │ :8442→agent   │  │                  │  │                  │  │ │
 │  │  └────────┬─────────┘  └────────┬─────────┘  └────────┬─────────┘  │ │
 │  │           │                     │                      │             │ │
 │  │  ┌────────┴─────────────────────┴──────────────────────┴─────────┐  │ │
-│  │  │   OpenClaw                                                     │  │ │
-│  │  │   172.19.0.3 (docker inspect devopsclaw-openclaw)              │  │ │
+│  │  │   Agent                                                     │  │ │
+│  │  │   172.19.0.3 (docker inspect devopsagent-agent)              │  │ │
 │  │  │   :18789 (内部 API)                                            │  │ │
 │  │  │   ci-selfheal Skill 在此运行                                    │  │ │
 │  │  └────────────────────────────────────────────────────────────────┘  │ │
@@ -52,7 +52,7 @@ Error: connect ECONNREFUSED 172.19.0.1:18440
 │  宿主机端口映射:                                                            │
 │    127.0.0.1:18440 → nginx:8440 (Jenkins HTTPS)                          │
 │    127.0.0.1:18441 → nginx:8441 (GitLab  HTTPS)                          │
-│    127.0.0.1:18442 → nginx:8442 (OpenClaw HTTPS)                        │
+│    127.0.0.1:18442 → nginx:8442 (Agent HTTPS)                        │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -75,7 +75,7 @@ Error: connect ECONNREFUSED 172.19.0.1:18440
 |------|---------|-----------|
 | **统一入口** | 各自暴露端口，散乱 | 所有流量经 nginx 443/844x |
 | **SSL 加密** | 需要各自配置 | nginx 集中管理证书 |
-| **URL 稳定** | IP 可能随容器重建变化 | 用容器名 `devopsclaw-nginx` 访问 |
+| **URL 稳定** | IP 可能随容器重建变化 | 用容器名 `devopsagent-nginx` 访问 |
 | **访问控制** | 无 | nginx 可做限流/白名单/日志 |
 | **与外部一致** | 内部外部用不同 URL | 内外部走同一套 nginx 规则 |
 
@@ -85,21 +85,21 @@ Error: connect ECONNREFUSED 172.19.0.1:18440
 |---------|----------------|-------------|
 | **Jenkins** | `https://nginx:8440/jenkins` | `http://jenkins:8080/jenkins` |
 | **GitLab** | `https://nginx:8441` | `http://gitlab:80` |
-| **OpenClaw** | `https://nginx:8442` | `http://openclaw:18789` |
+| **Agent** | `https://nginx:8442` | `http://agent:18789` |
 
-或使用 IP（容器名 DNS 在部分 OpenClaw 环境下可能不可用）：
+或使用 IP（容器名 DNS 在部分 Agent 环境下可能不可用）：
 
 | 目标服务 | 走 nginx (推荐) |
 |---------|----------------|
 | **Jenkins** | `https://172.19.0.5:8440/jenkins` |
 | **GitLab** | `https://172.19.0.5:8441` |
-| **OpenClaw** | `https://172.19.0.5:8442` |
+| **Agent** | `https://172.19.0.5:8442` |
 
 ---
 
 ## 四、逐步验证指令
 
-以下命令全部在 **OpenClaw 容器内** 执行（`docker exec -it devopsclaw-openclaw bash`）。
+以下命令全部在 **Agent 容器内** 执行（`docker exec -it devopsagent-agent bash`）。
 
 ### 4.1 验证 Docker 网络拓扑
 
@@ -143,7 +143,7 @@ echo "备选使用路径 C（Jenkins HTTP 直连，仅容器内）"
 ```bash
 echo "========== Jenkins Skill 测试（通过 nginx） =========="
 
-baseDir="/home/node/.openclaw/workspace/skills/jenkins"
+baseDir="/home/node/.agent/workspace/skills/jenkins"
 export JENKINS_URL="https://172.19.0.5:8440/jenkins"
 export JENKINS_USER="zx"
 export JENKINS_API_TOKEN="11e9fec81c11241d5a3897ab45608c6851"
@@ -177,10 +177,10 @@ curl -k -s -H "PRIVATE-TOKEN: $GITLAB_TOKEN" https://172.19.0.5:8441/api/v4/user
 
 **预期结果**：路径 B 返回用户信息 JSON（`username`、`id`、`name` 等），路径 A 可能不通。
 
-### 4.5 验证 OpenClaw 内部 API
+### 4.5 验证 Agent 内部 API
 
 ```bash
-echo "========== OpenClaw API 连通性 =========="
+echo "========== Agent API 连通性 =========="
 
 echo "--- 路径 A: 本机 localhost ---"
 curl -s -o /dev/null -w "127.0.0.1:18789 → HTTP %{http_code}\n" http://127.0.0.1:18789/health
@@ -193,7 +193,7 @@ curl -k -s -o /dev/null -w "172.19.0.5:8442 → HTTP %{http_code}\n" https://172
 
 ```bash
 #!/bin/bash
-# 在 OpenClaw 容器内执行
+# 在 Agent 容器内执行
 
 GITLAB_TOKEN="glpat-imZiYsNETLhKnLsIsOkEwG86MQp1OnoH.01.0w0rr1066"
 PASS=0
@@ -218,7 +218,7 @@ check() {
 }
 
 echo "══════════════════════════════════════════════"
-echo "  OpenClaw 容器 → 各服务连通性测试"
+echo "  Agent 容器 → 各服务连通性测试"
 echo "══════════════════════════════════════════════"
 echo ""
 
@@ -233,7 +233,7 @@ check "nginx HTTPS" "https://172.19.0.5:8441/api/v4/user" "-H 'PRIVATE-TOKEN: $G
 check "GitLab直连" "http://172.19.0.3:80/api/v4/user" "-H 'PRIVATE-TOKEN: $GITLAB_TOKEN'"
 
 echo ""
-echo "=== OpenClaw ==="
+echo "=== Agent ==="
 check "local API"   "http://127.0.0.1:18789/health"
 check "nginx HTTPS" "https://172.19.0.5:8442/health"
 
@@ -301,4 +301,4 @@ whitelist:
 |------|---------------|---------------|
 | Jenkins | `172.19.0.5:8440` | `127.0.0.1:18440` |
 | GitLab | `172.19.0.5:8441` | `127.0.0.1:18441` |
-| OpenClaw | `172.19.0.5:8442` | `127.0.0.1:18442` |
+| Agent | `172.19.0.5:8442` | `127.0.0.1:18442` |

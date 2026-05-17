@@ -1,30 +1,24 @@
-# OpenClaw v5.0 全局配置
+# Agent v5.0 全局配置
 jenkins:
   base_url: "https://127.0.0.1:18440/"
-  username: "zx"
-  api_token: "11e9fec81c11241d5a3897ab45608c6851"
+  username: "admin"
+  api_token: "REPLACE_WITH_YOUR_JENKINS_API_TOKEN"
 
 ai_model:
   provider: "deepseek"
   model_name: "deepseek-reasoner"
-  api_key: "sk-02e288c6964e43989a315e1a224c6233"
+  api_key: "REPLACE_WITH_YOUR_DEEPSEEK_API_KEY"
 
-# ============ 修复点在这里 ============
 gitlab:
-  base_url: "https://127.0.0.1:18441/"   # 你的 GitLab 实例地址
-  api_token: "glpat-imZiYsNETLhKnLsIsOkEwG86MQp1OnoH.01.0w0rr1066"     # GitLab Personal Access Token
-  # 权限要求: api (读写) + read_repository
+  base_url: "https://127.0.0.1:18441/"
+  api_token: "REPLACE_WITH_YOUR_GITLAB_TOKEN"
 
 git:
   user_name: "root"
-  user_email: "m18795857209@163.com"
-  #如果用 HTTPS 方式操作仓库，这里还需要:
-  credential_type: "token"       # 或 "ssh_key"
-  token: "glpat-imZiYsNETLhKnLsIsOkEwG86MQp1OnoH.01.0w0rr1066"            # 用于 git clone/push 的凭证
-  # 如果用 SSH，需要配:
-  # credential_type: "ssh_key"
-  # ssh_private_key_path: "/home/openclaw/.ssh/id_rsa"
-# ======================================
+  user_email: "user@example.com"
+  credential_type: "token"
+  token: "REPLACE_WITH_YOUR_GIT_TOKEN"
+
 
 white_list:
   repos: ["group/backend-api", "group/frontend-app"]

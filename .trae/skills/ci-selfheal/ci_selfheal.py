@@ -54,8 +54,8 @@ class Config:
     # 默认 AI 模型
     DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "deepseek-reasoner")
     
-    # OpenClaw 容器名称
-    OPENCLAW_CONTAINER = os.getenv("OPENCLAW_CONTAINER", "openclaw")
+    # Agent 容器名称
+    AGENT_CONTAINER = os.getenv("AGENT_CONTAINER", "agent")
     
     # 模型名称映射
     MODEL_MAPPING = {
@@ -216,7 +216,7 @@ class StateManager:
 STATE = StateManager()
 
 
-# ==================== AI 调用 (OpenClaw CLI) ====================
+# ==================== AI 调用 (Agent CLI) ====================
 def build_prompt(
     jenkinsfile: str,
     log_tail: str,
@@ -271,23 +271,23 @@ def build_prompt(
 
 
 def call_ai_with_cli(prompt: str, model: str = None) -> str:
-    """使用 OpenClaw CLI 调用 AI 模型"""
+    """使用 Agent CLI 调用 AI 模型"""
     model = model or Config.DEFAULT_MODEL
     
     # 模型名称映射
     full_model_name = Config.MODEL_MAPPING.get(model, model)
 
     try:
-        # 构建 OpenClaw CLI 命令
+        # 构建 Agent CLI 命令
         cmd = [
-            "docker", "exec", Config.OPENCLAW_CONTAINER,
-            "node", "openclaw.mjs",
+            "docker", "exec", Config.AGENT_CONTAINER,
+            "node", "agent.mjs",
             "infer", "model", "run",
             "--model", full_model_name,
             "--prompt", prompt
         ]
 
-        log_info(f"调用 OpenClaw CLI", model=full_model_name)
+        log_info(f"调用 Agent CLI", model=full_model_name)
 
         result = subprocess.run(
             cmd,
@@ -297,7 +297,7 @@ def call_ai_with_cli(prompt: str, model: str = None) -> str:
         )
 
         if result.returncode != 0:
-            raise RuntimeError(f"OpenClaw CLI 失败: {result.stderr}")
+            raise RuntimeError(f"Agent CLI 失败: {result.stderr}")
 
         # 解析输出，提取 AI 回复
         output_lines = result.stdout.strip().split('\n')
@@ -311,7 +311,7 @@ def call_ai_with_cli(prompt: str, model: str = None) -> str:
         return '\n'.join(output_lines[-15:]).strip()
 
     except Exception as e:
-        log_error(f"OpenClaw CLI 调用失败", error=str(e))
+        log_error(f"Agent CLI 调用失败", error=str(e))
         raise
 
 

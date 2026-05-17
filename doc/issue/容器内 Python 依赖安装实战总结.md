@@ -1,4 +1,4 @@
-适用场景：无 root、无 pip、无 venv、文件系统受限的 Debian/Ubuntu 容器，以及向 OpenClaw Hub 发布自研 Skill 时的依赖管理。
+适用场景：无 root、无 pip、无 venv、文件系统受限的 Debian/Ubuntu 容器，以及向 Agent Hub 发布自研 Skill 时的依赖管理。
 1. 问题概述
 在 node@3c2640357efe 容器中启动 ci-selfheal Skill 时，遇到以下连锁问题：
 ModuleNotFoundError: No module named 'yaml' —— 缺少 Python 依赖
@@ -104,7 +104,7 @@ python3 /tmp/get_deps.py
 3.4 启动命令
 bash
 Copy
-cd ~/.openclaw/workspace/skills/ci-selfheal
+cd ~/.agent/workspace/skills/ci-selfheal
 source .env 2>/dev/null || true
 PYTHONPATH="/tmp/selfheal-deps:$(pwd)" python3 -m infra.webhook_listener --host 0.0.0.0 --port 8080
 3.5 保存快捷启动脚本
@@ -112,13 +112,13 @@ bash
 Copy
 cat > ~/run-webhook.sh << 'EOF'
 #!/bin/bash
-cd ~/.openclaw/workspace/skills/ci-selfheal
+cd ~/.agent/workspace/skills/ci-selfheal
 source .env 2>/dev/null || true
 PYTHONPATH="/tmp/selfheal-deps:$(pwd)" python3 -m infra.webhook_listener --host 0.0.0.0 --port 8080
 EOF
 chmod +x ~/run-webhook.sh
 以后直接执行 ~/run-webhook.sh 即可。
-4. 向 OpenClaw Hub 发布 Skill 的建议
+4. 向 Agent Hub 发布 Skill 的建议
 如果 Skill 的目标运行环境可能是这种受限容器，不要让用户手动解决依赖，应在 Skill 内部自举。
 4.1 推荐做法：自带安装脚本
 在 Skill 根目录放置 install.sh，用户只需执行一次：

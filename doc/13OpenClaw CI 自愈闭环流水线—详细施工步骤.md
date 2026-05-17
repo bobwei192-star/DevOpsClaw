@@ -1,11 +1,11 @@
-# OpenClaw CI 自愈闭环流水线 — 详细施工步骤
+# Agent CI 自愈闭环流水线 — 详细施工步骤
 
 > **版本**: v1.0  
 > **日期**: 2026-05-10  
 > **配套文档**:
-> - [11OpenClaw CI 自愈闭环流水线—核心设计方案.md](./11OpenClaw%20CI%20%E8%87%AA%E6%84%88%E9%97%AD%E7%8E%AF%E6%B5%81%E6%B0%B4%E7%BA%BF%E2%80%94%E6%A0%B8%E5%BF%83%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88.md)
-> - [12OpenClaw CI 自愈闭环流水线—详细设计方案.md](./12OpenClaw%20CI%20%E8%87%AA%E6%84%88%E9%97%AD%E7%8E%AF%E6%B5%81%E6%B0%B4%E7%BA%BF%E2%80%94%E8%AF%A6%E7%BB%86%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88.md)  
-> **核心仓库**: `github.com/bobwei192-star/openclaw-skill-ci-selfheal`  
+> - [11Agent CI 自愈闭环流水线—核心设计方案.md](./11Agent%20CI%20%E8%87%AA%E6%84%88%E9%97%AD%E7%8E%AF%E6%B5%81%E6%B0%B4%E7%BA%BF%E2%80%94%E6%A0%B8%E5%BF%83%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88.md)
+> - [12Agent CI 自愈闭环流水线—详细设计方案.md](./12Agent%20CI%20%E8%87%AA%E6%84%88%E9%97%AD%E7%8E%AF%E6%B5%81%E6%B0%B4%E7%BA%BF%E2%80%94%E8%AF%A6%E7%BB%86%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88.md)  
+> **核心仓库**: `github.com/bobwei192-star/agent-skill-ci-selfheal`  
 > **全局配置**: `config/.global_settings.yaml`（已预填）
 
 ---
@@ -23,30 +23,30 @@
 
 ## Phase 0：环境准备与基线验证
 
-> **目标**: 确认 OpenClaw 容器、Jenkins、GitLab 连通性，验证已安装 Skill 可用性。  
+> **目标**: 确认 Agent 容器、Jenkins、GitLab 连通性，验证已安装 Skill 可用性。  
 > **工期**: 0.5 天
 
 ### Step 0.1：确认容器运行状态
 
 ```bash
-# 1. 检查 OpenClaw 容器是否运行
-docker ps | grep devopsclaw-openclaw
+# 1. 检查 Agent 容器是否运行
+docker ps | grep devopsagent-agent
 
 # 2. 进入容器
-docker exec -it devopsclaw-openclaw bash
+docker exec -it devopsagent-agent bash
 
-# 3. 验证 openclaw CLI
-openclaw --version
+# 3. 验证 agent CLI
+agent --version
 ```
 
-**预期结果**: 容器状态为 `Up`，`openclaw --version` 返回版本号。
+**预期结果**: 容器状态为 `Up`，`agent --version` 返回版本号。
 
 ### Step 0.2：验证 Jenkins 连通性
 
 ```bash
 # 在容器内执行
 # 1. 先设置环境变量（每次新开 shell 都需要执行）
-baseDir="/home/node/.openclaw/workspace/skills/jenkins"
+baseDir="/home/node/.agent/workspace/skills/jenkins"
 export JENKINS_URL="https://172.19.0.1:18440/jenkins"
 export JENKINS_USER="zx"
 export JENKINS_API_TOKEN="11e9fec81c11241d5a3897ab45608c6851"
@@ -142,14 +142,14 @@ git clone \
 ```bash
 # 在容器内执行
 # 查看已安装的 workspace skills
-ls -la /home/node/.openclaw/workspace/skills/
+ls -la /home/node/.agent/workspace/skills/
 
 # 查看 jenkins skill 是否已安装
-ls -la /home/node/.openclaw/workspace/skills/jenkins/
-cat /home/node/.openclaw/workspace/skills/jenkins/SKILL.md
+ls -la /home/node/.agent/workspace/skills/jenkins/
+cat /home/node/.agent/workspace/skills/jenkins/SKILL.md
 
 # 验证 jenkins skill 可用
-baseDir="/home/node/.openclaw/workspace/skills/jenkins"
+baseDir="/home/node/.agent/workspace/skills/jenkins"
 export JENKINS_URL="https://172.19.0.1:18440/jenkins"
 export JENKINS_USER="zx"
 export JENKINS_API_TOKEN="11e9fec81c11241d5a3897ab45608c6851"
@@ -158,7 +158,7 @@ node ${baseDir}/scripts/jenkins.mjs jobs
 ```
 
 **预期结果**（已验证通过 ✅）：
-- `/home/node/.openclaw/workspace/skills/jenkins/` 目录存在，包含 `SKILL.md`、`_meta.json`、`scripts/`
+- `/home/node/.agent/workspace/skills/jenkins/` 目录存在，包含 `SKILL.md`、`_meta.json`、`scripts/`
 - `node jenkins.mjs jobs` 返回 Jenkins Job 列表，示例：
   ```json
   {
@@ -177,7 +177,7 @@ node ${baseDir}/scripts/jenkins.mjs jobs
   ```
 
 **实际验证记录**（2026-05-10）：
-- ✅ `ls /home/node/.openclaw/workspace/skills/` — 共 15 个 Skill 已安装
+- ✅ `ls /home/node/.agent/workspace/skills/` — 共 15 个 Skill 已安装
 - ✅ `jenkins` skill — 返回 1 个 Job（`example_fauliure_job`，状态 FAILURE）
 - ✅ `ci-monitor` — 已安装
 - ✅ `ci-cd-watchdog` — 已安装
@@ -195,19 +195,19 @@ node ${baseDir}/scripts/jenkins.mjs jobs
 - ✅ `capability-evolver-pro` — 已安装
 
 **重要说明**: Jenkins 安装的是 **workspace skill**，不是 CLI 插件，因此：
-- ❌ 没有 `openclaw jenkins` 命令
-- ✅ 通过 `node /home/node/.openclaw/workspace/skills/jenkins/scripts/jenkins.mjs` 直接调用
-- ✅ 或通过 `openclaw agent --message "列出 Jenkins jobs"` 让 Agent 自动调用
+- ❌ 没有 `agent jenkins` 命令
+- ✅ 通过 `node /home/node/.agent/workspace/skills/jenkins/scripts/jenkins.mjs` 直接调用
+- ✅ 或通过 `agent agent --message "列出 Jenkins jobs"` 让 Agent 自动调用
 
 ### Step 0.5：验证 AI 模型调用
 
 ```bash
 # 在容器内执行
-# 方法 1: 使用 openclaw agent 交互式聊天（需要指定 --agent 和 --message）
-openclaw agent --agent main --message "Hello, test connection"
+# 方法 1: 使用 agent agent 交互式聊天（需要指定 --agent 和 --message）
+agent agent --agent main --message "Hello, test connection"
 
 # 方法 2: 使用 docker exec 调用底层 infer 命令
-docker exec devopsclaw-openclaw node openclaw.mjs infer model run \
+docker exec devopsagent-agent node agent.mjs infer model run \
   --model "custom-api-deepseek-com/deepseek-reasoner" \
   --prompt "Hello, test connection"
 ```
@@ -215,8 +215,8 @@ docker exec devopsclaw-openclaw node openclaw.mjs infer model run \
 **预期结果**: 返回 AI 响应，无连接错误或认证失败。
 
 **实际验证记录**（2026-05-10）：
-- ✅ `openclaw agent --agent main --message "Hello, test connection"` — Agent 正常响应，显示 "Waiting for agent reply…"
-- ⚠️ `openclaw agent` 必须使用 `--message`（不是 `--prompt`），且需要指定 `--agent main`
+- ✅ `agent agent --agent main --message "Hello, test connection"` — Agent 正常响应，显示 "Waiting for agent reply…"
+- ⚠️ `agent agent` 必须使用 `--message`（不是 `--prompt`），且需要指定 `--agent main`
 
 **排错**:
 - 若报错 `required option '-m, --message <text>' not specified`：使用 `--message` 而不是 `--prompt`
@@ -233,7 +233,7 @@ docker exec devopsclaw-openclaw node openclaw.mjs infer model run \
 
 ```bash
 # 手动触发测试构建（使用 jenkins workspace skill）
-baseDir="/home/node/.openclaw/workspace/skills/jenkins"
+baseDir="/home/node/.agent/workspace/skills/jenkins"
 export JENKINS_URL="https://172.19.0.1:18440/jenkins"
 export JENKINS_USER="zx"
 export JENKINS_API_TOKEN="11e9fec81c11241d5a3897ab45608c6851"
@@ -250,10 +250,10 @@ node ${baseDir}/scripts/jenkins.mjs build --job "test-ci-selfheal"
 
 ### Step 1.1：重构项目目录结构
 
-将现有 `openclaw-skill-ci-selfheal/` 按模块化设计重构：
+将现有 `agent-skill-ci-selfheal/` 按模块化设计重构：
 
 ```bash
-cd openclaw-skill-ci-selfheal
+cd agent-skill-ci-selfheal
 
 # 创建新目录结构
 mkdir -p gate collector diagnoser decider verifier infra tests
@@ -269,7 +269,7 @@ mv scripts/orchestrator.py orchestrator.py
 **目标目录结构**:
 
 ```
-openclaw-skill-ci-selfheal/
+agent-skill-ci-selfheal/
 │
 ├── gate/
 │   ├── __init__.py
@@ -315,7 +315,7 @@ openclaw-skill-ci-selfheal/
 │   └── test_decider.py
 │
 ├── orchestrator.py           # 主编排器
-├── skill.toml                # OpenClaw manifest
+├── skill.toml                # Agent manifest
 ├── SKILL.md                  # Skill 定义
 ├── requirements.txt
 └── README.md
@@ -359,7 +359,7 @@ python -m pytest tests/test_gate.py -v
 #### 1.3.1 `collector/jenkins_logs.py`
 
 **功能要求**:
-- 封装 `openclaw jenkins logs` 调用
+- 封装 `agent jenkins logs` 调用
 - 支持按 Job Name + Build Number 拉取日志
 - 返回原始日志文本
 
@@ -535,7 +535,7 @@ entrypoint = "orchestrator.py"
 ```bash
 # 1. 准备测试 Job（构建脚本含语法错误）
 # 2. 触发构建失败
-baseDir="/home/node/.openclaw/workspace/skills/jenkins"
+baseDir="/home/node/.agent/workspace/skills/jenkins"
 export JENKINS_URL="https://172.19.0.1:18440/jenkins"
 export JENKINS_USER="zx"
 export JENKINS_API_TOKEN="11e9fec81c11241d5a3897ab45608c6851"
@@ -662,7 +662,7 @@ AI 诊断 → 决策矩阵判断 → 创建 fix 分支 → Commit 修复 → Pus
 ```bash
 # 1. 准备测试 Job（可修复的编译错误）
 # 2. 触发构建失败
-baseDir="/home/node/.openclaw/workspace/skills/jenkins"
+baseDir="/home/node/.agent/workspace/skills/jenkins"
 export JENKINS_URL="https://172.19.0.1:18440/jenkins"
 export JENKINS_USER="zx"
 export JENKINS_API_TOKEN="11e9fec81c11241d5a3897ab45608c6851"
@@ -941,9 +941,9 @@ python tests/perf/test_concurrent.py
 
 ---
 
-## Phase 5：`openclaw-skill-ci-selfheal` 模块化构建与 Hub 发布
+## Phase 5：`agent-skill-ci-selfheal` 模块化构建与 Hub 发布
 
-> **目标**: 按模块依赖顺序完成 Skill 的开发、测试、打包与 OpenClaw Hub 发布。  
+> **目标**: 按模块依赖顺序完成 Skill 的开发、测试、打包与 Agent Hub 发布。  
 > **工期**: 3 天
 
 ### Step 5.1：模块构建顺序与依赖关系
@@ -1010,8 +1010,8 @@ cat skill.toml
 | 章节 | 必须内容 |
 |------|---------|
 | Description | 一句话概述 + 五步自愈流程说明 |
-| Dependencies | 列出 9 个依赖 Skill（→ OpenClaw Hub 自动解析依赖） |
-| Usage | `openclaw ci-selfheal orchestrate/status` 命令示例 |
+| Dependencies | 列出 9 个依赖 Skill（→ Agent Hub 自动解析依赖） |
+| Usage | `agent ci-selfheal orchestrate/status` 命令示例 |
 | Configuration | 必填环境变量表格（`JENKINS_URL`、`JENKINS_USER`、`JENKINS_TOKEN`、`JJB_CONFIG_PATH`） |
 | State File | `.self-heal-state.json` 位置与格式说明 |
 
@@ -1197,7 +1197,7 @@ echo $?  # orchestrate 成功 → 0，失败/拦截 → 1
 
 ### Step 5.7：Skill 打包前检查清单
 
-在发布至 OpenClaw Hub 之前，必须逐项确认：
+在发布至 Agent Hub 之前，必须逐项确认：
 
 | # | 检查项 | 验证方法 |
 |---|--------|---------|
@@ -1220,7 +1220,7 @@ echo $?  # orchestrate 成功 → 0，失败/拦截 → 1
 #!/bin/bash
 ERRORS=0
 
-echo "=== openclaw-skill-ci-selfheal 发布前检查 ==="
+echo "=== agent-skill-ci-selfheal 发布前检查 ==="
 echo ""
 
 # 1. 必需文件检查
@@ -1242,7 +1242,7 @@ echo "=== 检查完成: $ERRORS 个错误 ==="
 
 ---
 
-### Step 5.8：OpenClaw Hub 发布步骤
+### Step 5.8：Agent Hub 发布步骤
 
 **发布流程**:
 
@@ -1251,8 +1251,8 @@ echo "=== 检查完成: $ERRORS 个错误 ==="
 | 1 | 版本号定稿 | 修改 `skill.toml` 中 `version`，如 `1.0.0` |
 | 2 | Git Tag | `git tag v1.0.0 && git push origin v1.0.0` |
 | 3 | GitHub Release | 基于 Tag 创建 Release，Release Notes 写清变更 |
-| 4 | Hub 索引更新 | OpenClaw Hub 自动检测新 Release 并更新索引（或手动提 PR 更新索引仓库） |
-| 5 | 安装验证 | 在全新 OpenClaw 环境中 `openclaw skills install ci-selfheal` 验证可安装 |
+| 4 | Hub 索引更新 | Agent Hub 自动检测新 Release 并更新索引（或手动提 PR 更新索引仓库） |
+| 5 | 安装验证 | 在全新 Agent 环境中 `agent skills install ci-selfheal` 验证可安装 |
 
 **Release Notes 模板**:
 ```markdown
@@ -1273,17 +1273,17 @@ echo "=== 检查完成: $ERRORS 个错误 ==="
 
 ### Installation
 \`\`\`bash
-openclaw skills install ci-selfheal
+agent skills install ci-selfheal
 \`\`\`
 ```
 
 **发布后验证**:
 ```bash
 # 1. 全新环境中安装
-openclaw skills install ci-selfheal
+agent skills install ci-selfheal
 
 # 2. 确认依赖 Skill 已自动拉取
-ls /home/node/.openclaw/workspace/skills/
+ls /home/node/.agent/workspace/skills/
 
 # 3. 配置环境变量
 export JENKINS_URL="https://172.19.0.1:18440/jenkins"
@@ -1309,8 +1309,8 @@ cat .self-heal-state.json | python -m json.tool
 ### 日常开发
 
 ```bash
-# 进入 OpenClaw 容器
-docker exec -it devopsclaw-openclaw bash
+# 进入 Agent 容器
+docker exec -it devopsagent-agent bash
 
 # 运行 Skill 主流程（使用 Python 脚本）
 cd /app/.trae/skills/ci-selfheal
@@ -1333,7 +1333,7 @@ cat .self-heal-state.json | python -m json.tool
 
 1. 安装 Jenkins `Notification Plugin`
 2. Job 配置 → 构建后操作 → Add post-build action → HTTP Request
-3. URL: `http://openclaw-host:5000/webhook/jenkins`
+3. URL: `http://agent-host:5000/webhook/jenkins`
 4. Method: POST
 5. Content-Type: application/json
 6. Body:
@@ -1349,7 +1349,7 @@ cat .self-heal-state.json | python -m json.tool
 ### GitLab Webhook 配置（Pipeline 失败时）
 
 1. Project → Settings → Webhooks
-2. URL: `http://openclaw-host:5000/webhook/gitlab`
+2. URL: `http://agent-host:5000/webhook/gitlab`
 3. Trigger: Pipeline events
 4. 勾选 `Enable SSL verification`（如适用）
 

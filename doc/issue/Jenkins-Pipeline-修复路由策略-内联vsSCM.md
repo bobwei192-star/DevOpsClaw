@@ -1,7 +1,7 @@
 # Jenkins Pipeline 修复路由策略：SCM 模式 vs 内联脚本模式
 
 > **日期**: 2026-05-13  
-> **关联**: `openclaw-skill-ci-selfheal/scripts/orchestrator.py`  
+> **关联**: `agent-skill-ci-selfheal/scripts/orchestrator.py`  
 > **背景**: `example_fauliure_job` 使用"Pipeline script"（内联模式），修复 GitLab 仓库的 Jenkinsfile 无效，需直接更新 Jenkins config.xml。
 
 ---

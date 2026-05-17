@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# DevOpsClaw GitLab 部署脚本
+# DevOpsAgent GitLab 部署脚本
 # =============================================================================
 # 功能：
 #   - 部署 GitLab 服务
@@ -33,8 +33,8 @@ GITLAB_PORT_HTTP="${GITLAB_PORT_HTTP:-19092}"
 GITLAB_PORT_HTTPS="${GITLAB_PORT_HTTPS:-19443}"
 GITLAB_PORT_SSH="${GITLAB_PORT_SSH:-2222}"
 GITLAB_BIND="${GITLAB_BIND:-127.0.0.1}"
-GITLAB_IMAGE="${GITLAB_IMAGE:-gitlab/gitlab-ce:latest}"
-GITLAB_CONTAINER_NAME="${GITLAB_CONTAINER_NAME:-devopsclaw-gitlab}"
+GITLAB_IMAGE="${GITLAB_IMAGE:-gitlab/gitlab-ce:17.11.2-ce.0}"
+GITLAB_CONTAINER_NAME="${GITLAB_CONTAINER_NAME:-devopsagent-gitlab}"
 GITLAB_DATA_DIR="${GITLAB_DATA_DIR:-$PROJECT_DIR/data/gitlab}"
 GITLAB_PASSWORD_FILE="/etc/gitlab/initial_root_password"
 GITLAB_ROOT_USER="${GITLAB_ROOT_USER:-root}"
@@ -102,9 +102,10 @@ deploy_gitlab() {
         
         docker run -d \
             --name "$GITLAB_CONTAINER_NAME" \
-            --network devopsclaw-network \
+            --network devopsagent-network \
             --restart unless-stopped \
             --hostname gitlab \
+            --shm-size=512m \
             -p "$GITLAB_BIND:$GITLAB_PORT_HTTP:80" \
             -p "$GITLAB_BIND:$GITLAB_PORT_HTTPS:443" \
             -p "$GITLAB_BIND:$GITLAB_PORT_SSH:22" \
@@ -118,9 +119,10 @@ deploy_gitlab() {
         
         docker run -d \
             --name "$GITLAB_CONTAINER_NAME" \
-            --network devopsclaw-network \
+            --network devopsagent-network \
             --restart unless-stopped \
             --hostname gitlab \
+            --shm-size=512m \
             -p "$GITLAB_BIND:$GITLAB_PORT_HTTP:80" \
             -p "$GITLAB_BIND:$GITLAB_PORT_HTTPS:443" \
             -p "$GITLAB_BIND:$GITLAB_PORT_SSH:22" \
@@ -179,8 +181,8 @@ get_gitlab_password() {
                     echo -e "${BOLD}${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
                     echo
                     echo -e "  ${CYAN}登录地址:${NC}"
-                    echo -e "    - 通过 Nginx: ${YELLOW}https://127.0.0.1:$GITLAB_NGINX_PORT${NC}"
-                    echo -e "    - 直接访问: ${YELLOW}http://127.0.0.1:$GITLAB_PORT_HTTP${NC}"
+                    echo -e "    - 通过 Nginx: ${YELLOW}https://${NGINX_BIND:-$(detect_local_ip)}:$GITLAB_NGINX_PORT${NC}"
+                    echo -e "    - 直接访问: ${YELLOW}http://${GITLAB_BIND:-127.0.0.1}:$GITLAB_PORT_HTTP${NC}"
                     echo
                     echo -e "  ${CYAN}用户名:${NC}   ${YELLOW}root${NC}"
                     echo -e "  ${CYAN}密码:${NC}     ${YELLOW}$password${NC}"
@@ -247,33 +249,35 @@ get_gitlab_password_simple() {
 
 print_gitlab_summary() {
     local mode="${1:-standalone}"
-    
+    local bind_display="${NGINX_BIND:-$(detect_local_ip)}"
+    local nginx_port="${GITLAB_NGINX_PORT:-18441}"
+
     echo
     echo -e "${BOLD}${GREEN}┌─────────────────────────────────────────────────────────────────┐${NC}"
     echo -e "${BOLD}${GREEN}│                      GitLab 服务状态                             │${NC}"
     echo -e "${BOLD}${GREEN}└─────────────────────────────────────────────────────────────────┘${NC}"
     echo
-    
+
     if docker ps -q --filter "name=$GITLAB_CONTAINER_NAME" 2>/dev/null | grep -q .; then
         log_info "容器: $GITLAB_CONTAINER_NAME - 运行中 ✓"
     else
         log_warn "容器: $GITLAB_CONTAINER_NAME - 未运行"
     fi
-    
+
     if [[ "$mode" == "without_nginx" ]]; then
         echo
         echo -e "${BOLD}GitLab 访问地址:${NC}"
-        echo -e "  - 本地访问: ${CYAN}http://127.0.0.1:$GITLAB_PORT_HTTP${NC}"
+        echo -e "  - 本地访问: ${CYAN}http://${bind_display}:$GITLAB_PORT_HTTP${NC}"
         echo -e "  - 网络访问: ${YELLOW}http://<主机IP>:$GITLAB_PORT_HTTP${NC}"
         echo -e "  - SSH 端口: $GITLAB_PORT_SSH"
     elif [[ "$mode" == "with_nginx" ]]; then
         echo
         echo -e "${BOLD}GitLab 访问地址:${NC}"
-        echo -e "  - Nginx (推荐): ${CYAN}http://127.0.0.1:18441${NC}"
-        echo -e "  - 直连: http://127.0.0.1:$GITLAB_PORT_HTTP"
+        echo -e "  - Nginx (推荐): ${CYAN}https://${bind_display}:${nginx_port}${NC}"
+        echo -e "  - 直连: http://${bind_display}:$GITLAB_PORT_HTTP"
         echo -e "  - SSH 端口: $GITLAB_PORT_SSH"
     fi
-    
+
     echo
     log_warn "GitLab 首次初始化需要 5-10 分钟"
     log_info "默认用户名: root"
@@ -282,7 +286,7 @@ print_gitlab_summary() {
 
 show_help() {
     echo
-    echo -e "${BOLD}DevOpsClaw GitLab 部署脚本${NC}"
+    echo -e "${BOLD}DevOpsAgent GitLab 部署脚本${NC}"
     echo
     echo -e "用法: $0 [选项]"
     echo

@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# DevOpsClaw Jenkins 部署脚本
+# DevOpsAgent Jenkins 部署脚本
 # =============================================================================
 # 功能：
 #   - 部署 Jenkins 服务
@@ -32,7 +32,7 @@ JENKINS_PORT_WEB="${JENKINS_PORT_WEB:-18081}"
 JENKINS_PORT_AGENT="${JENKINS_PORT_AGENT:-50000}"
 JENKINS_BIND="${JENKINS_BIND:-127.0.0.1}"
 JENKINS_IMAGE="${JENKINS_IMAGE:-jenkins/jenkins:2.541.3-lts-jdk21}"
-JENKINS_CONTAINER_NAME="${JENKINS_CONTAINER_NAME:-devopsclaw-jenkins}"
+JENKINS_CONTAINER_NAME="${JENKINS_CONTAINER_NAME:-devopsagent-jenkins}"
 JENKINS_DATA_DIR="${JENKINS_DATA_DIR:-$PROJECT_DIR/data/jenkins}"
 JENKINS_JAVA_OPTS="${JENKINS_JAVA_OPTS:--Dhudson.security.csrf.GlobalCrumbIssuerConfiguration.DISABLE_CSRF_PROTECTION=true -Dhudson.model.DirectoryBrowserSupport.CSP=\"\"}"
 JENKINS_OPTS="${JENKINS_OPTS:---prefix=/jenkins}"
@@ -78,7 +78,7 @@ EOFPERMS
     
     docker run -d \
         --name "$JENKINS_CONTAINER_NAME" \
-        --network devopsclaw-network \
+        --network devopsagent-network \
         --restart unless-stopped \
         -p "$JENKINS_BIND:$JENKINS_PORT_WEB:8080" \
         -p "$JENKINS_BIND:$JENKINS_PORT_AGENT:50000" \
@@ -125,8 +125,8 @@ get_jenkins_password() {
                 echo -e "${BOLD}${GREEN}═══════════════════════════════════════════════════════════════════════════════${NC}"
                 echo
                 echo -e "  ${CYAN}登录地址:${NC}"
-                echo -e "    - 通过 Nginx: ${YELLOW}https://127.0.0.1:18440/jenkins/${NC}"
-                echo -e "    - 直接访问: ${YELLOW}http://127.0.0.1:$JENKINS_PORT_WEB/jenkins/${NC}"
+                echo -e "    - 通过 Nginx: ${YELLOW}https://${NGINX_BIND:-$(detect_local_ip)}:${NGINX_PORT_JENKINS:-18440}/jenkins/${NC}"
+                echo -e "    - 直接访问: ${YELLOW}http://${JENKINS_BIND:-127.0.0.1}:$JENKINS_PORT_WEB/jenkins/${NC}"
                 echo
                 echo -e "  ${CYAN}解锁密码:${NC}   ${YELLOW}$password${NC}"
                 echo
@@ -211,37 +211,39 @@ get_jenkins_password_simple() {
 
 print_jenkins_summary() {
     local mode="${1:-standalone}"
-    
+    local bind_display="${NGINX_BIND:-$(detect_local_ip)}"
+    local nginx_port="${NGINX_PORT_JENKINS:-18440}"
+
     echo
     echo -e "${BOLD}${GREEN}┌─────────────────────────────────────────────────────────────────┐${NC}"
     echo -e "${BOLD}${GREEN}│                      Jenkins 服务状态                            │${NC}"
     echo -e "${BOLD}${GREEN}└─────────────────────────────────────────────────────────────────┘${NC}"
     echo
-    
+
     if docker ps -q --filter "name=$JENKINS_CONTAINER_NAME" 2>/dev/null | grep -q .; then
         log_info "容器: $JENKINS_CONTAINER_NAME - 运行中 ✓"
     else
         log_warn "容器: $JENKINS_CONTAINER_NAME - 未运行"
     fi
-    
+
     if [[ "$mode" == "without_nginx" ]]; then
         echo
         echo -e "${BOLD}Jenkins 访问地址:${NC}"
-        echo -e "  - 本地访问: ${CYAN}http://127.0.0.1:$JENKINS_PORT_WEB/jenkins/${NC}"
+        echo -e "  - 本地访问: ${CYAN}http://${bind_display}:$JENKINS_PORT_WEB/jenkins/${NC}"
         echo -e "  - 网络访问: ${YELLOW}http://<主机IP>:$JENKINS_PORT_WEB/jenkins/${NC}"
     elif [[ "$mode" == "with_nginx" ]]; then
         echo
         echo -e "${BOLD}Jenkins 访问地址:${NC}"
-        echo -e "  - Nginx (推荐): ${CYAN}http://127.0.0.1:18440/jenkins/${NC}"
-        echo -e "  - 直连: http://127.0.0.1:$JENKINS_PORT_WEB/jenkins/"
+        echo -e "  - Nginx (推荐): ${CYAN}https://${bind_display}:${nginx_port}/jenkins/${NC}"
+        echo -e "  - 直连: http://${bind_display}:$JENKINS_PORT_WEB/jenkins/"
     fi
-    
+
     echo
 }
 
 show_help() {
     echo
-    echo -e "${BOLD}DevOpsClaw Jenkins 部署脚本${NC}"
+    echo -e "${BOLD}DevOpsAgent Jenkins 部署脚本${NC}"
     echo
     echo -e "用法: $0 [选项]"
     echo

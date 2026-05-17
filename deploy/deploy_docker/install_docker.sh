@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# DevOpsClaw Docker 安装脚本
+# DevOpsAgent Docker 安装脚本
 # =============================================================================
 # 功能：
 #   - 安装 Docker CE
@@ -384,10 +384,10 @@ pull_image_with_fallback() {
     local -a source_names=()
     
     case "$service" in
-        openclaw)
+        agent)
             sources=(
-                "ghcr.io/openclaw/openclaw:latest"
-                "docker.io/openclaw/openclaw:latest"
+                "ghcr.io/agent/agent:latest"
+                "docker.io/agent/agent:latest"
             )
             source_names=(
                 "github-ghcr"
@@ -396,9 +396,9 @@ pull_image_with_fallback() {
             ;;
         jenkins)
             sources=(
-                "docker.io/jenkins/jenkins:lts-jdk17"
-                "registry.cn-hangzhou.aliyuncs.com/library/jenkins:lts-jdk17"
-                "docker.mirrors.sjtug.sjtu.edu.cn/library/jenkins:lts-jdk17"
+                "docker.io/jenkins/jenkins:lts-jdk21"
+                "registry.cn-hangzhou.aliyuncs.com/library/jenkins:lts-jdk21"
+                "docker.mirrors.sjtug.sjtu.edu.cn/library/jenkins:lts-jdk21"
             )
             source_names=(
                 "dockerhub"
@@ -522,7 +522,7 @@ pull_image_with_fallback() {
         echo -e "${CYAN}【方案 2】配置代理访问 GHCR${NC}"
         echo "  export HTTP_PROXY=http://127.0.0.1:7890"
         echo "  export HTTPS_PROXY=http://127.0.0.1:7890"
-        echo "  sudo -E docker pull ghcr.io/openclaw/openclaw:latest"
+        echo "  sudo -E docker pull ghcr.io/agent/agent:latest"
         echo
         
         return 1
@@ -542,7 +542,7 @@ pull_image_with_fallback() {
 
 show_help() {
     echo
-    echo -e "${BOLD}DevOpsClaw Docker 安装脚本${NC}"
+    echo -e "${BOLD}DevOpsAgent Docker 安装脚本${NC}"
     echo
     echo -e "用法: $0 [选项]"
     echo
@@ -554,7 +554,7 @@ show_help() {
     echo -e "  ${CYAN}--check${NC}                 检查 Docker 环境"
     echo
     echo -e "服务列表:"
-    echo -e "  ${GREEN}openclaw${NC}                OpenClaw 镜像"
+    echo -e "  ${GREEN}agent${NC}                Agent 镜像"
     echo -e "  ${GREEN}jenkins${NC}                 Jenkins 镜像"
     echo -e "  ${GREEN}gitlab${NC}                  GitLab 镜像"
     echo -e "  ${GREEN}nginx${NC}                   Nginx 镜像"

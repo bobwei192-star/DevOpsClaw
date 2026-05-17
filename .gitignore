@@ -1,19 +1,20 @@
 # ============================================
-# DevOpsClaw .gitignore
+# DevOpsAgent .gitignore
 # ============================================
 
 # ============================================
 # 1. 敏感配置文件
 # ============================================
 .env
-.env.local
-.env.*.local
-.env.backup
-.env.bak
-.openclaw_token
-.openclaw_token.bak
+.env.*
+secrets.env
+config.env
+.agent_token
+.agent_token.bak
 *.token
 *.secret
+credentials.yml
+credentials.yaml
 
 # ============================================
 # 2. 数据目录（包含密码、密钥等敏感信息）
@@ -21,7 +22,7 @@
 data/
 data/gitlab/
 data/jenkins/
-data/openclaw/
+data/agent/
 
 # ============================================
 # 3. SSL 证书和私钥
