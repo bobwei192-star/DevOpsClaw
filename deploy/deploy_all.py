@@ -574,6 +574,13 @@ def ensure_nginx_proxy(nginx_bind="0.0.0.0"):
         conf_file = nginx_conf_d / f"{svc}.conf"
         _generate_nginx_conf(conf_file, listen_port, running_container, back, nginx_ssl_dir)
 
+    # 清理后端已不存在的 stale conf 文件 (防止 Nginx 因 DNS 解析失败而崩溃)
+    for conf_file in nginx_conf_d.glob("*.conf"):
+        svc_name = conf_file.stem
+        if svc_name not in detected:
+            info(f"  清理残留 conf: {conf_file.name} (后端容器已不存在)")
+            conf_file.unlink()
+
     # 启动/重启 Nginx
     if detected:
         for container in detected_containers:
@@ -693,10 +700,16 @@ def print_summary(mode, services, use_nginx):
 
     if use_nginx:
         print(f"{COLORS['CYAN']}【Nginx HTTPS 访问地址】{COLORS['NC']}")
+        shown = set()
         for svc in services:
             if svc != "nginx" and svc in SERVICE_CONFIG:
                 port = PORT_REGISTRY["nginx"].get(svc, "?")
                 print(f"  {svc}: https://{ip}:{port}")
+                shown.add(svc)
+        for svc_name in ("jenkins", "gitlab", "agent", "mantisbt"):
+            if svc_name not in shown and _find_running_container(f"devopsagent-{svc_name}"):
+                port = PORT_REGISTRY["nginx"].get(svc_name, "?")
+                print(f"  {svc_name}: https://{ip}:{port}")
     else:
         print(f"{COLORS['CYAN']}【直接访问地址】{COLORS['NC']}")
         for svc in services:
@@ -731,7 +744,7 @@ def main():
     parser.add_argument("--deploy-gitlab-standalone", action="store_true")
     parser.add_argument("--deploy-mantisbt-standalone", action="store_true")
     parser.add_argument("--deploy-nginx-standalone", action="store_true")
-    parser.add_argument("--nginx-bind", type=str, default=None, help="Nginx 绑定地址 (默认自动检测物理网卡 IP)")
+    parser.add_argument("--nginx-bind", type=str, default="0.0.0.0", help="Nginx 绑定地址 (默认 0.0.0.0, WSL2 推荐)")
 
     args = parser.parse_args()
 
@@ -790,7 +803,9 @@ def main():
 
     # 部署
     step(f"开始部署: 模式={mode}, 服务={services}")
-    if not deploy_services(services, use_nginx, args.nginx_bind):
+    bind = args.nginx_bind or detect_local_ip()
+    info(f"Nginx 绑定地址: {bind}")
+    if not deploy_services(services, use_nginx, bind):
         error("部署过程中出现错误, 请检查日志")
         sys.exit(1)
 
